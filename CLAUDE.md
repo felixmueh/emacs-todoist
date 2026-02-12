@@ -13,12 +13,15 @@ emacs-todoist.el  (integration: config, sync logic, interactive commands)
   └── emacs-todoist-api.el  (Todoist Sync API wrapper, no org dependency)
 ```
 
-- **`emacs-todoist-org.el`** — All functions assume point is on an org
-  heading. No network calls. Testable in isolation.
-- **`emacs-todoist-api.el`** — Stateless: sync tokens passed in by
-  callers, new tokens returned. Uses `url-retrieve` (built-in async).
+- **`emacs-todoist-org.el`** — 13 functions. All assume point is on
+  an org heading. No network calls. Testable in isolation.
+- **`emacs-todoist-api.el`** — 12 functions. Stateless: sync tokens
+  passed in by callers, new tokens returned. Uses `url-retrieve`
+  (built-in async). No org dependency.
 - **`emacs-todoist.el`** — Wires org + api together. All async logic
-  uses callback chains since `url-retrieve` is async.
+  uses callback chains since `url-retrieve` is async. Contains
+  `defcustom` declarations, logging, sync logic, and interactive
+  commands.
 
 ## Sync state model
 
@@ -40,10 +43,20 @@ remote_changed = sha1(fetched task)    ≠ TODOIST_REMOTE_HASH
 
 Both hashes update together after each successful sync.
 
+**Sync token strategy for batch operations** (`sync-buffer`):
+- All tokens identical → use that token (incremental)
+- Tokens differ → use `"*"` (full sync)
+- Response token written back to all synced headings
+
+**Deletion detection**:
+- Incremental sync: missing item = unchanged (no action)
+- Full sync (`"*"`): missing item = deleted remotely → prompt user:
+  delete local, re-push, or unlink
+
 ## Testing
 
 ```sh
-make test              # All tests (org + api + integration)
+make test              # All 90 tests (39 org + 36 api + 14 integration + 1 smoke)
 make test-org          # Only org module tests
 make test-api          # Only API tests (no HTTP, no rate limits)
 make test-integration  # Only integration tests
@@ -54,6 +67,10 @@ make test FILE=test-org MATCH=description
 
 All API tests mock `url-retrieve` via `cl-letf` — no real network
 calls. Integration tests mock `emacs-todoist-api-sync` similarly.
+
+Test helpers: `with-org-buffer` (temp org buffer with point at first
+heading), `with-mock-sync` (mocks `emacs-todoist-api-sync` and
+captures calls in `emacs-todoist-test--sync-calls`).
 
 ## Conventions
 
@@ -76,8 +93,56 @@ calls. Integration tests mock `emacs-todoist-api-sync` similarly.
 ## Implementation phases
 
 - [x] Phase 0: Dev tooling (Makefile, test runner)
-- [x] Phase 1: Org module + 39 tests
-- [x] Phase 2: API module + 36 tests
-- [ ] Phase 3: Integration layer + tests (emacs-todoist.el in progress)
-- [ ] Phase 4: Bulk sync (`sync-buffer`) + frontend (`emacs-todoist-open`)
+- [x] Phase 1: Org module — 13 functions + 39 tests
+- [x] Phase 2: API module — 12 functions + 36 tests
+- [x] Phase 3: Integration layer — sync logic, logging, 14 tests
+- [ ] Phase 4: Bulk sync + frontend
 - [ ] Phase 5: Polish (README.org, autoloads, package headers)
+
+## Phase 4: Bulk sync + frontend (next up)
+
+### `emacs-todoist-sync-buffer` command
+
+Sync all `TODOIST`-linked headings in the current buffer:
+1. Collect all headings via `emacs-todoist-org-synced-entries`
+2. Determine sync token strategy:
+   - All `TODOIST_SYNC_TOKEN` identical → use it (incremental)
+   - Tokens differ → use `"*"` (full sync)
+3. Fetch remote items in one API call
+4. For each heading: compare hashes, push/pull/skip as needed
+5. Write new sync token back to all synced headings
+
+### `emacs-todoist-open` frontend buffer
+
+1. Call `emacs-todoist-api-fetch-items` with `"*"` to get all tasks
+2. Create ephemeral `*Todoist*` buffer in `org-mode`
+3. Render each task as an org heading:
+   - TODO/DONE state from `checked`
+   - DEADLINE from `due.date`
+   - Description as body text
+   - All `TODOIST_*` properties set
+   - Sub-tasks nested as sub-headings
+4. Group top-level headings by project (as level-1 headings)
+5. Mark buffer as not visiting a file (ephemeral)
+6. All `emacs-todoist-sync-*` commands work in this buffer
+
+### Tests needed for Phase 4
+
+- `sync-buffer`: all same token → incremental; mixed → full sync
+- `sync-buffer`: handles mix of changed/unchanged headings
+- Deletion: full sync missing task → prompts user with 3 options
+- Frontend: renders tasks correctly, groups by project
+
+## Phase 5: Polish
+
+- Add `;;;###autoload` cookies to interactive commands
+- Package headers (Version, Package-Requires, URL, Keywords)
+- `README.org` with usage instructions
+- `SESSION.md` for discovered issues
+
+## Known future work (not MVP)
+
+- Parent/child structure change conflict resolution
+- ediff for conflict resolution (currently prompts local vs remote)
+- Todoist labels/priorities mapping
+- Recurring task support
