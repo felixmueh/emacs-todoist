@@ -57,10 +57,11 @@ Both hashes update together after each successful sync.
 ## Testing
 
 ```sh
-make test              # All 90 tests (39 org + 36 api + 14 integration + 1 smoke)
+make test              # All 90 mock tests (39 org + 36 api + 14 integration + 1 smoke)
 make test-org          # Only org module tests
 make test-api          # Only API tests (no HTTP, no rate limits)
 make test-integration  # Only integration tests
+make test-live         # 8 live API tests (requires valid token, see below)
 
 # Filter by file and pattern:
 make test FILE=test-org MATCH=description
@@ -72,6 +73,36 @@ calls. Integration tests mock `emacs-todoist-api-sync` similarly.
 Test helpers: `with-org-buffer` (temp org buffer with point at first
 heading), `with-mock-sync` (mocks `emacs-todoist-api-sync` and
 captures calls in `emacs-todoist-test--sync-calls`).
+
+### Live API tests
+
+`tests/test-live.el` contains 8 tests that hit the real Todoist Sync
+API v1.  They are **excluded** from the default `make test` target
+(via `run-tests.el`) and must be run explicitly with `make test-live`.
+
+**Setup**: place a valid Todoist API token in `.todoist_api_token` at
+the project root (this file is gitignored).
+
+**How they work**:
+- `emacs-todoist-api-sync` (async via `url-retrieve`) is replaced at
+  runtime by a synchronous shim that uses
+  `url-retrieve-synchronously` — necessary because batch Emacs has no
+  event loop for async callbacks.
+- Each test creates tasks via the API, runs `emacs-todoist-sync-heading`
+  (or `push-heading`/`pull-heading`), then verifies org properties and
+  remote state.
+- All created tasks are deleted in an `unwind-protect` cleanup, even
+  if a test fails midway.
+
+**Key helpers** (in `test-live.el`):
+- `with-live-sync` — sets up the token, installs the sync shim,
+  ensures cleanup
+- `emacs-todoist-test-live--sync-blocking` — synchronous Sync API
+  call using `url-retrieve-synchronously`
+- `emacs-todoist-test-live--fetch-task` — full-sync fetch of a single
+  task by ID
+- `emacs-todoist-test-live--update-task` — modify a task server-side
+  (for testing pull scenarios)
 
 ## Conventions
 
