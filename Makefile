@@ -3,7 +3,7 @@ EMACS ?= emacs
 SRCS := emacs-todoist-org.el emacs-todoist-api.el emacs-todoist.el
 TEST_SRCS := $(wildcard tests/test-*.el)
 
-.PHONY: test test-org test-api test-integration compile clean
+.PHONY: test test-org test-api test-integration test-live compile clean
 
 compile:
 	$(EMACS) --batch -L . -f batch-byte-compile $(SRCS)
@@ -32,6 +32,10 @@ test-api:
 
 test-integration:
 	$(EMACS) --batch -L . -L tests -l test-integration.el \
+	  -f ert-run-tests-batch-and-exit
+
+test-live:
+	$(EMACS) --batch -L . -L tests -l test-live.el \
 	  -f ert-run-tests-batch-and-exit
 
 clean:

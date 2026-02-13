@@ -1,7 +1,8 @@
 # emacs-todoist
 
 Bidirectional sync between org-mode TODOs and Todoist via the Sync
-API v1.
+API v1.  **Not** v9 — we target the v1 endpoint at
+`https://api.todoist.com/api/v1/sync`.
 
 ## Architecture
 

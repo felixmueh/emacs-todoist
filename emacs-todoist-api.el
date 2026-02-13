@@ -165,10 +165,17 @@ Missing keys in RESPONSE are returned as nil."
   "Compute SHA-1 of sync-relevant fields of a Todoist ITEM alist.
 Hashes `content', `description', `due', and `checked' to produce the
 TODOIST_REMOTE_HASH stored alongside org headings."
-  (let ((content     (alist-get 'content item))
-        (description (alist-get 'description item))
-        (due         (alist-get 'due item))
-        (checked     (alist-get 'checked item)))
+  (let* ((content     (alist-get 'content item))
+         (description (alist-get 'description item))
+         (due         (alist-get 'due item))
+         (raw-checked (alist-get 'checked item))
+         ;; Normalize checked: the API may return `:json-false' for
+         ;; unchecked tasks, but locally we use 0.  Canonicalize to
+         ;; 0/1 so hashes match across local and remote representations.
+         (checked (if (and raw-checked
+                          (not (eq raw-checked :json-false))
+                          (= raw-checked 1))
+                      1 0)))
     (sha1 (format "%S" (list content description due checked)))))
 
 ;; ==============================================================================
@@ -202,11 +209,20 @@ Uses `url-retrieve' for asynchronous HTTP."
              ;; Skip HTTP headers — the body follows the first blank line.
              (goto-char (point-min))
              (re-search-forward "\r?\n\r?\n")
-             (let ((json-object-type 'alist)
-                   (json-array-type  'list)
-                   (json-key-type    'symbol))
-               (funcall callback (emacs-todoist-api-parse-response
-                                  (json-read)))))
+             (let* ((json-object-type 'alist)
+                    (json-array-type  'list)
+                    (json-key-type    'symbol)
+                    (parsed (json-read)))
+               ;; The API returns a top-level `error' key on auth and
+               ;; request-level failures (e.g. invalid token, 403).
+               ;; Pass it through so callers see the error.
+               (if (alist-get 'error parsed)
+                   (funcall callback
+                            `((error . ,(format "%s (code %s)"
+                                                (alist-get 'error parsed)
+                                                (alist-get 'error_code parsed)))))
+                 (funcall callback
+                          (emacs-todoist-api-parse-response parsed)))))
          (error
           (funcall callback `((error . ,(error-message-string err))))))))))
 

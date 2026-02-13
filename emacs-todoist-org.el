@@ -172,9 +172,13 @@ DATA keys:
       (when new-title
         (org-edit-headline new-title)))
     ;; -- Update TODO state --
-    ;; `checked' = 1 means the task is done in Todoist.
+    ;; `checked' = 1 means the task is done in Todoist.  The API may
+    ;; return `:json-false' for unchecked tasks instead of 0.
     (let* ((checked (alist-get 'checked data))
-           (target-state (if (and checked (= checked 1)) "DONE" "TODO")))
+           (target-state (if (and checked
+                                  (not (eq checked :json-false))
+                                  (= checked 1))
+                             "DONE" "TODO")))
       (org-todo target-state))
     ;; -- Update deadline --
     (let* ((due (alist-get 'due data))

@@ -5,6 +5,9 @@
 
 (let ((test-dir (file-name-directory (or load-file-name buffer-file-name))))
   (dolist (file (directory-files test-dir t "\\`test-.*\\.el\\'"))
-    (load file nil t)))
+    ;; Exclude live API tests — they hit the real Todoist API and are
+    ;; run separately via `make test-live'.
+    (unless (string-match-p "test-live" file)
+      (load file nil t))))
 
 ;;; run-tests.el ends here
