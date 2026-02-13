@@ -57,7 +57,7 @@ Both hashes update together after each successful sync.
 ## Testing
 
 ```sh
-make test              # All 90 mock tests (39 org + 36 api + 14 integration + 1 smoke)
+make test              # All 97 mock tests (39 org + 36 api + 21 integration + 1 smoke)
 make test-org          # Only org module tests
 make test-api          # Only API tests (no HTTP, no rate limits)
 make test-integration  # Only integration tests

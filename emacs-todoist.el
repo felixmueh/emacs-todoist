@@ -85,6 +85,32 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
           (insert (format "[%s] [%s] %s\n" timestamp level-str msg)))))))
 
 ;; ==============================================================================
+;; Sync status validation
+;; ==============================================================================
+
+(defun emacs-todoist--check-sync-status (response)
+  "Check RESPONSE's `sync_status' for per-command errors.
+Returns nil if all commands succeeded (every value is \"ok\"),
+or if `sync_status' is absent (read-only syncs don't return it).
+Returns a descriptive error string if any command failed."
+  (let ((statuses (alist-get 'sync_status response))
+        errors)
+    (dolist (entry statuses)
+      (let ((uuid (format "%s" (car entry)))
+            (status (cdr entry)))
+        (unless (equal status "ok")
+          ;; Status may be an alist with `error' and `error_code' keys,
+          ;; or a string describing the failure.
+          (let ((msg (if (listp status)
+                         (format "%s (code %s)"
+                                 (or (alist-get 'error status) status)
+                                 (alist-get 'error_code status))
+                       (format "%s" status))))
+            (push (format "command %s: %s" uuid msg) errors)))))
+    (when errors
+      (mapconcat #'identity (nreverse errors) "; "))))
+
+;; ==============================================================================
 ;; TODO state ↔ Todoist checked conversion
 ;; ==============================================================================
 
@@ -188,9 +214,21 @@ hashes as org properties."
     (emacs-todoist-api-sync
      "*" '("items") commands
      (lambda (response)
-       (if (alist-get 'error response)
-           (emacs-todoist-log 'error "Sync error: %s" (alist-get 'error response))
+       (cond
+        ((alist-get 'error response)
+         (emacs-todoist-log 'error "Sync error: %s" (alist-get 'error response))
+         (message "emacs-todoist: sync error for \"%s\"" title))
 
+        ;; Check per-command errors in sync_status.  The API can return
+        ;; HTTP 200 with no top-level error while individual commands
+        ;; fail (e.g. invalid project_id).  Without this check, we'd
+        ;; silently write nil into TODOIST_ID.
+        ((emacs-todoist--check-sync-status response)
+         (emacs-todoist-log 'error "Push failed for %s: %s"
+                            title (emacs-todoist--check-sync-status response))
+         (message "emacs-todoist: push failed for \"%s\" (see log)" title))
+
+        (t
          (let ((sync-token  (alist-get 'sync_token response))
                (id-mapping  (alist-get 'temp_id_mapping response)))
            ;; Write properties on the parent heading.
@@ -203,15 +241,23 @@ hashes as org properties."
                (let* ((real-id (cdr (assoc parent-temp-id id-mapping
                                            (lambda (a b)
                                              (equal (format "%s" a)
-                                                    (format "%s" b))))))
-                      (local-hash (emacs-todoist-org-heading-local-hash))
-                      (remote-item (emacs-todoist--heading-as-remote-item))
-                      (remote-hash (emacs-todoist-api-hash-item remote-item)))
-                 (emacs-todoist-org-set-props
-                  `(("TODOIST_ID"          . ,real-id)
-                    ("TODOIST_LOCAL_HASH"  . ,local-hash)
-                    ("TODOIST_REMOTE_HASH" . ,remote-hash)
-                    ("TODOIST_SYNC_TOKEN"  . ,sync-token))))))
+                                                    (format "%s" b)))))))
+                 (unless real-id
+                   (emacs-todoist-log 'error
+                                      "No ID in temp_id_mapping for %s (mapping: %S)"
+                                      title id-mapping)
+                   (error "Push appeared to succeed but no ID was returned for \"%s\"" title))
+                 ;; Coerce to string — the API returns string IDs in v1
+                 ;; but guard against future changes.
+                 (let* ((real-id-str    (format "%s" real-id))
+                       (local-hash  (emacs-todoist-org-heading-local-hash))
+                       (remote-item (emacs-todoist--heading-as-remote-item))
+                       (remote-hash (emacs-todoist-api-hash-item remote-item)))
+                   (emacs-todoist-org-set-props
+                    `(("TODOIST_ID"          . ,real-id-str)
+                      ("TODOIST_LOCAL_HASH"  . ,local-hash)
+                      ("TODOIST_REMOTE_HASH" . ,remote-hash)
+                      ("TODOIST_SYNC_TOKEN"  . ,sync-token)))))))
 
            ;; Write properties on each child heading.
            (dolist (entry child-entries)
@@ -223,18 +269,24 @@ hashes as org properties."
                    (let* ((real-id (cdr (assoc child-temp id-mapping
                                                (lambda (a b)
                                                  (equal (format "%s" a)
-                                                        (format "%s" b))))))
-                          (local-hash (emacs-todoist-org-heading-local-hash))
-                          (remote-item (emacs-todoist--heading-as-remote-item))
-                          (remote-hash (emacs-todoist-api-hash-item remote-item)))
-                     (emacs-todoist-org-set-props
-                      `(("TODOIST_ID"          . ,real-id)
-                        ("TODOIST_LOCAL_HASH"  . ,local-hash)
-                        ("TODOIST_REMOTE_HASH" . ,remote-hash)
-                        ("TODOIST_SYNC_TOKEN"  . ,sync-token))))))))
+                                                        (format "%s" b)))))))
+                     (unless real-id
+                       (emacs-todoist-log 'error
+                                          "No child ID in temp_id_mapping (mapping: %S)"
+                                          id-mapping)
+                       (error "Push appeared to succeed but no child ID was returned"))
+                     (let* ((real-id-str    (format "%s" real-id))
+                           (local-hash  (emacs-todoist-org-heading-local-hash))
+                           (remote-item (emacs-todoist--heading-as-remote-item))
+                           (remote-hash (emacs-todoist-api-hash-item remote-item)))
+                       (emacs-todoist-org-set-props
+                        `(("TODOIST_ID"          . ,real-id-str)
+                          ("TODOIST_LOCAL_HASH"  . ,local-hash)
+                          ("TODOIST_REMOTE_HASH" . ,remote-hash)
+                          ("TODOIST_SYNC_TOKEN"  . ,sync-token)))))))))
 
            (emacs-todoist-log 'info "Pushed new heading successfully: %s" title)
-           (message "emacs-todoist: pushed new task \"%s\"" title)))))))
+           (message "emacs-todoist: pushed new task \"%s\"" title))))))))
 
 ;; ==============================================================================
 ;; Push update (existing task, local changes)
@@ -276,9 +328,18 @@ that should be stored after the push."
     (emacs-todoist-api-sync
      (or new-sync-token sync-token) '("items") commands
      (lambda (response)
-       (if (alist-get 'error response)
-           (emacs-todoist-log 'error "Push update error: %s"
-                              (alist-get 'error response))
+       (cond
+        ((alist-get 'error response)
+         (emacs-todoist-log 'error "Push update error: %s"
+                            (alist-get 'error response))
+         (message "emacs-todoist: push update error for \"%s\"" title))
+
+        ((emacs-todoist--check-sync-status response)
+         (emacs-todoist-log 'error "Push update failed for %s: %s"
+                            title (emacs-todoist--check-sync-status response))
+         (message "emacs-todoist: push update failed for \"%s\" (see log)" title))
+
+        (t
          (with-current-buffer (marker-buffer marker)
            (save-excursion
              (goto-char marker)
@@ -291,7 +352,7 @@ that should be stored after the push."
                   ("TODOIST_REMOTE_HASH" . ,remote-hash)
                   ("TODOIST_SYNC_TOKEN"  . ,resp-token))))))
          (emacs-todoist-log 'info "Pushed update successfully: %s" title)
-         (message "emacs-todoist: pushed update for \"%s\"" title))))))
+         (message "emacs-todoist: pushed update for \"%s\"" title)))))))
 
 ;; ==============================================================================
 ;; Pull remote changes into local heading

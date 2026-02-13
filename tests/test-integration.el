@@ -424,4 +424,114 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
   (should (equal "DONE" (emacs-todoist--checked-to-state 1)))
   (should (equal "TODO" (emacs-todoist--checked-to-state nil))))
 
+;; ==============================================================================
+;; Sync status error detection
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/push-detects-sync-status-error ()
+  "Pushing a heading reports failure when sync_status contains a command error.
+The Todoist API can return HTTP 200 with no top-level error while
+individual commands fail (e.g. invalid project_id).  Previously this
+was silently ignored, leaving TODOIST_ID blank."
+  (with-org-buffer "* TODO Failing task\n"
+    (with-mock-sync nil
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (let* ((cmd (car commands))
+                          (uuid (alist-get 'uuid cmd)))
+                     ;; Simulate a per-command failure: sync_status
+                     ;; maps the command UUID to an error object
+                     ;; instead of "ok", and temp_id_mapping is empty.
+                     (funcall callback
+                              `((sync_token . "tok-1")
+                                (sync_status . ((,uuid . ((error . "Invalid project_id")
+                                                          (error_code . 22)))))
+                                (temp_id_mapping . nil)
+                                (items . nil)))))))
+        (emacs-todoist-sync-heading)))
+
+    ;; TODOIST_ID should NOT have been set.
+    (should (null (org-entry-get (point) "TODOIST_ID")))
+    ;; No hashes should have been written either.
+    (should (null (org-entry-get (point) "TODOIST_LOCAL_HASH")))))
+
+(ert-deftest emacs-todoist-integration/push-update-detects-sync-status-error ()
+  "Pushing an update reports failure when sync_status contains a command error."
+  (with-org-buffer "* TODO Existing task\nUpdated.\n"
+    (emacs-todoist-org-set-props
+     '(("TODOIST_ID"          . "task-42")
+       ("TODOIST_LOCAL_HASH"  . "old-hash")
+       ("TODOIST_REMOTE_HASH" . "old-remote")
+       ("TODOIST_SYNC_TOKEN"  . "old-token")))
+
+    (with-mock-sync nil
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (let* ((cmd (car commands))
+                          (uuid (alist-get 'uuid cmd)))
+                     (funcall callback
+                              `((sync_token . "tok-2")
+                                (sync_status . ((,uuid . ((error . "Task not found")
+                                                          (error_code . 20)))))
+                                (items . nil)))))))
+        (emacs-todoist-push-heading)))
+
+    ;; Hashes should NOT have been updated (still old values).
+    (should (equal "old-hash" (org-entry-get (point) "TODOIST_LOCAL_HASH")))
+    (should (equal "old-remote" (org-entry-get (point) "TODOIST_REMOTE_HASH")))))
+
+(ert-deftest emacs-todoist-integration/push-errors-on-missing-temp-id-mapping ()
+  "Pushing a heading errors when sync succeeds but temp_id_mapping is empty.
+This catches the case where the API response is successful (all
+commands have status \"ok\") but temp_id_mapping is missing — a
+defensive check that shouldn't happen in practice."
+  (with-org-buffer "* TODO Mysterious task\n"
+    (with-mock-sync nil
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (let* ((cmd (car commands))
+                          (uuid (alist-get 'uuid cmd)))
+                     ;; sync_status says "ok" but temp_id_mapping is empty.
+                     (funcall callback
+                              `((sync_token . "tok-3")
+                                (sync_status . ((,uuid . "ok")))
+                                (temp_id_mapping . nil)
+                                (items . nil)))))))
+        ;; The callback should signal an error about missing ID.
+        (should-error (emacs-todoist-sync-heading))))
+
+    ;; TODOIST_ID should NOT have been set.
+    (should (null (org-entry-get (point) "TODOIST_ID")))))
+
+;; ==============================================================================
+;; Check-sync-status unit tests
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/check-sync-status-all-ok ()
+  "Returns nil when all commands succeeded."
+  (should (null (emacs-todoist--check-sync-status
+                 '((sync_status . ((cmd-1 . "ok") (cmd-2 . "ok"))))))))
+
+(ert-deftest emacs-todoist-integration/check-sync-status-missing ()
+  "Returns nil when sync_status is absent (read-only sync)."
+  (should (null (emacs-todoist--check-sync-status
+                 '((sync_token . "tok"))))))
+
+(ert-deftest emacs-todoist-integration/check-sync-status-error-object ()
+  "Returns error string when a command failed with an error object."
+  (let ((result (emacs-todoist--check-sync-status
+                 `((sync_status . ((cmd-1 . "ok")
+                                   (cmd-2 . ((error . "Bad request")
+                                             (error_code . 42)))))))))
+    (should result)
+    (should (string-match-p "Bad request" result))
+    (should (string-match-p "42" result))))
+
+(ert-deftest emacs-todoist-integration/check-sync-status-error-string ()
+  "Returns error string when a command status is a non-\"ok\" string."
+  (let ((result (emacs-todoist--check-sync-status
+                 '((sync_status . ((cmd-1 . "error: rate limited")))))))
+    (should result)
+    (should (string-match-p "rate limited" result))))
+
 ;;; test-integration.el ends here
