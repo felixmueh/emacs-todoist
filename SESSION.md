@@ -12,3 +12,5 @@
 
 ## Other TODOs
 - Error message should appear to the user (not just logged to the log file.)
+- Syncing heading moves marker (can be avoided with `save-excursion`)
+- Add option to diff (ediff) headings when both remote and local changed.
