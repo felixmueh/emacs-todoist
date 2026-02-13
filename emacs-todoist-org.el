@@ -177,7 +177,7 @@ DATA keys:
     (let* ((checked (alist-get 'checked data))
            (target-state (if (and checked
                                   (not (eq checked :json-false))
-                                  (= checked 1))
+                                  (not (equal checked 0)))
                              "DONE" "TODO")))
       (org-todo target-state))
     ;; -- Update deadline --

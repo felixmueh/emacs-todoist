@@ -174,9 +174,12 @@ TODOIST_REMOTE_HASH stored alongside org headings."
          ;; Normalize checked: the API may return `:json-false' for
          ;; unchecked tasks, but locally we use 0.  Canonicalize to
          ;; 0/1 so hashes match across local and remote representations.
+         ;; The API may return `t' (JSON true), 1, `:json-false'
+         ;; (JSON false), 0, or nil.  Treat anything truthy that isn't
+         ;; `:json-false' or 0 as checked.
          (checked (if (and raw-checked
                           (not (eq raw-checked :json-false))
-                          (= raw-checked 1))
+                          (not (equal raw-checked 0)))
                       1 0)))
     (sha1 (format "%S" (list content description due checked)))))
 

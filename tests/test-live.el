@@ -126,6 +126,11 @@ Returns the real task ID.  Registers the ID for cleanup."
   (let ((cmd (apply #'emacs-todoist-api-item-update id args)))
     (emacs-todoist-test-live--sync-blocking "*" '("items") (list cmd))))
 
+(defun emacs-todoist-test-live--complete-task (id)
+  "Complete task ID on Todoist via the Sync API."
+  (let ((commands (emacs-todoist-api-item-complete (list id))))
+    (emacs-todoist-test-live--sync-blocking "*" '("items") commands)))
+
 (defun emacs-todoist-test-live--fetch-task (id)
   "Fetch task ID from Todoist.  Returns the item alist, or nil if not found.
 ID can be a string or number — comparison coerces both to strings
@@ -399,5 +404,31 @@ Also sets up the API token and ensures cleanup on failure."
         (emacs-todoist-sync-heading)
         (should (equal "Remotely updated description."
                        (emacs-todoist-org-heading-description)))))))
+
+;; ==============================================================================
+;; Tests: Sync after remote completion
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-live/sync-after-remote-complete ()
+  "Syncing a heading after the task is completed on Todoist pulls the DONE state.
+Reproduces: `Wrong type argument: number-or-marker-p, t' — the API
+returns `checked' as JSON true (t in Elisp), but the code used `=' which
+requires numeric arguments."
+  (with-live-sync
+    (with-org-buffer "* TODO Task to complete remotely\n"
+      ;; Push the heading.
+      (emacs-todoist-sync-heading)
+      (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
+        (should todoist-id)
+        (push todoist-id emacs-todoist-test-live--created-ids)
+
+        ;; Complete the task on Todoist via the API.
+        (emacs-todoist-test-live--complete-task todoist-id)
+
+        ;; Re-sync — this triggers the fetch path that reads `checked'.
+        (emacs-todoist-sync-heading)
+
+        ;; The heading should now be DONE.
+        (should (equal "DONE" (org-get-todo-state)))))))
 
 ;;; test-live.el ends here

@@ -181,7 +181,7 @@ Returns 1 for completed states, 0 for active/nil states."
 (defun emacs-todoist--checked-to-state (checked)
   "Convert Todoist CHECKED value to an org TODO state string.
 CHECKED can be 0, 1, :json-false, or nil."
-  (if (and checked (not (eq checked :json-false)) (= checked 1))
+  (if (and checked (not (eq checked :json-false)) (not (equal checked 0)))
       "DONE"
     "TODO"))
 
