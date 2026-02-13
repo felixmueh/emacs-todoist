@@ -22,21 +22,14 @@ else
 	  -f ert-run-tests-batch-and-exit
 endif
 
-test-org:
-	$(EMACS) --batch -L . -L tests -l test-org.el \
+test-org test-api test-integration test-live: test-%:
+ifdef MATCH
+	$(EMACS) --batch -L . -L tests -l test-$*.el \
+	  --eval '(ert-run-tests-batch-and-exit "$(MATCH)")'
+else
+	$(EMACS) --batch -L . -L tests -l test-$*.el \
 	  -f ert-run-tests-batch-and-exit
-
-test-api:
-	$(EMACS) --batch -L . -L tests -l test-api.el \
-	  -f ert-run-tests-batch-and-exit
-
-test-integration:
-	$(EMACS) --batch -L . -L tests -l test-integration.el \
-	  -f ert-run-tests-batch-and-exit
-
-test-live:
-	$(EMACS) --batch -L . -L tests -l test-live.el \
-	  -f ert-run-tests-batch-and-exit
+endif
 
 clean:
 	rm -f *.elc tests/*.elc
