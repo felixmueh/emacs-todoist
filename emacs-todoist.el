@@ -39,7 +39,10 @@
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-default-project nil
-  "Default Todoist project ID for new tasks."
+  "Default Todoist project for new tasks.
+Accepts either a project name (e.g. \"agenda\") or a numeric project
+ID string (e.g. \"2349578432\").  Names are resolved to IDs via the
+project cache on first push."
   :type '(choice (const nil) string)
   :group 'emacs-todoist)
 
@@ -83,6 +86,59 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
         (with-current-buffer (get-buffer-create emacs-todoist-log-buffer-name)
           (goto-char (point-max))
           (insert (format "[%s] [%s] %s\n" timestamp level-str msg)))))))
+
+;; ==============================================================================
+;; Project cache
+;; ==============================================================================
+
+;; The Todoist Sync API requires numeric project IDs, but users configure
+;; human-readable names.  We maintain a session-level cache of (name . id)
+;; pairs, populated lazily on first push, so that names can be resolved
+;; without an extra API call on every operation.
+
+(defvar emacs-todoist--project-cache :not-fetched
+  "Session-level project name → ID cache.
+Set to `:not-fetched' initially; becomes an alist of (NAME . ID) after
+the first fetch, where NAME is downcased for case-insensitive lookup.")
+
+(defun emacs-todoist--project-cache-populate (projects)
+  "Populate the project cache from PROJECTS, a list of API project alists.
+Each entry has at least `name' and `id' keys."
+  (setq emacs-todoist--project-cache
+        (mapcar (lambda (proj)
+                  (cons (downcase (alist-get 'name proj))
+                        (format "%s" (alist-get 'id proj))))
+                projects))
+  (emacs-todoist-log 'debug "Project cache populated with %d entries"
+                     (length emacs-todoist--project-cache)))
+
+(defun emacs-todoist--ensure-projects (callback)
+  "Ensure the project cache is populated, then call CALLBACK.
+If the cache is already populated, calls CALLBACK immediately.
+Otherwise fetches projects from the API first."
+  (if (not (eq emacs-todoist--project-cache :not-fetched))
+      (funcall callback)
+    (emacs-todoist-log 'debug "Fetching project list for cache")
+    (emacs-todoist-api-fetch-projects
+     (lambda (response)
+       (if (alist-get 'error response)
+           (progn
+             (emacs-todoist-log 'error "Failed to fetch projects: %s"
+                                (alist-get 'error response))
+             (message "emacs-todoist: failed to fetch projects"))
+         (emacs-todoist--project-cache-populate
+          (alist-get 'projects response))
+         (funcall callback))))))
+
+(defun emacs-todoist--resolve-project-id (project-string)
+  "Resolve PROJECT-STRING to a numeric Todoist project ID.
+Tries a case-insensitive name lookup in the project cache first.
+If no match is found, assumes PROJECT-STRING is already a numeric ID
+and returns it as-is.  Returns nil if PROJECT-STRING is nil."
+  (when project-string
+    (or (alist-get (downcase project-string) emacs-todoist--project-cache
+                   nil nil #'equal)
+        project-string)))
 
 ;; ==============================================================================
 ;; Sync status validation
@@ -158,13 +214,28 @@ allowing us to compute a remote hash for data we're about to push."
   "Push the heading at point as a new Todoist task.
 Builds item_add commands for the heading and its direct children,
 sends them via the Sync API, and writes back the resulting IDs and
-hashes as org properties."
+hashes as org properties.
+
+Fetches the project list on first use to resolve project names to IDs."
+  (let ((marker (point-marker)))
+    ;; Ensure the project cache is populated before we resolve names.
+    (emacs-todoist--ensure-projects
+     (lambda ()
+       (with-current-buffer (marker-buffer marker)
+         (save-excursion
+           (goto-char marker)
+           (emacs-todoist--push-new-heading-1)))))))
+
+(defun emacs-todoist--push-new-heading-1 ()
+  "Internal: build and send item_add commands for the heading at point.
+Assumes the project cache is already populated.  Called by
+`emacs-todoist--push-new-heading' after `emacs-todoist--ensure-projects'."
   (let* ((marker (point-marker))
          (data   (emacs-todoist-org-heading-to-alist))
          (title  (alist-get 'title data))
          (desc   (alist-get 'description data))
          (due    (alist-get 'deadline data))
-         (proj   (alist-get 'project data))
+         (proj   (emacs-todoist--resolve-project-id (alist-get 'project data)))
          ;; Generate a temp ID so children can reference this parent
          ;; before Todoist assigns a real ID.
          (parent-temp-id (emacs-todoist-api-generate-uuid))
@@ -207,7 +278,7 @@ hashes as org properties."
     (setq commands (nreverse commands))
     (setq child-entries (nreverse child-entries))
 
-    (emacs-todoist-log 'info "Pushing new heading: %s" title)
+    (emacs-todoist-log 'info "Pushing new heading: %s (project: %s)" title proj)
 
     ;; Send the batch to Todoist.  The callback writes properties back
     ;; onto the org headings once we have real IDs.

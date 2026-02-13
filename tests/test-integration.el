@@ -534,4 +534,147 @@ defensive check that shouldn't happen in practice."
     (should result)
     (should (string-match-p "rate limited" result))))
 
+;; ==============================================================================
+;; Project name → ID resolution
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/project-name-resolved-to-id ()
+  "Pushing a new heading resolves project name to numeric ID via cache."
+  (with-org-buffer "* TODO Buy groceries\nShopping list.\n"
+    (let ((emacs-todoist-default-project "Agenda")
+          ;; Reset cache so ensure-projects triggers a fetch.
+          (emacs-todoist--project-cache :not-fetched)
+          (emacs-todoist-log-level 'error))
+      ;; We mock both api-sync and api-fetch-projects.  The push flow
+      ;; calls ensure-projects (which calls fetch-projects) first, then
+      ;; calls api-sync to send the item_add commands.
+      (let ((sync-calls nil))
+        (cl-letf (((symbol-function 'emacs-todoist-api-fetch-projects)
+                   (lambda (callback)
+                     (funcall callback
+                              `((projects . (((name . "Agenda")
+                                              (id . "2349578432"))
+                                             ((name . "Inbox")
+                                              (id . "1111111111"))))))))
+                  ((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (_sync-token _resource-types commands callback)
+                     (push commands sync-calls)
+                     (let* ((cmd (car commands))
+                            (temp-id (alist-get 'temp_id cmd)))
+                       (funcall callback
+                                `((sync_token . "tok-resolved")
+                                  (temp_id_mapping . ((,temp-id . "real-id-42")))
+                                  (items . nil)))))))
+          (emacs-todoist-sync-heading))
+
+        ;; The item_add command should have the numeric project ID,
+        ;; not the human-readable name.
+        (should (= 1 (length sync-calls)))
+        (let* ((commands (car sync-calls))
+               (cmd (car commands))
+               (args (alist-get 'args cmd)))
+          (should (equal "item_add" (alist-get 'type cmd)))
+          (should (equal "2349578432" (alist-get 'project_id args))))
+
+        ;; TODOIST_ID should have been written back.
+        (should (equal "real-id-42" (org-entry-get (point) "TODOIST_ID")))))))
+
+(ert-deftest emacs-todoist-integration/numeric-project-id-passes-through ()
+  "A project string that looks like a numeric ID passes through unchanged."
+  (with-org-buffer "* TODO Buy groceries\n"
+    (let ((emacs-todoist-default-project "2349578432")
+          ;; Pre-populate cache with projects that don't match.
+          (emacs-todoist--project-cache '(("inbox" . "1111111111")))
+          (emacs-todoist-log-level 'error))
+      (let ((sync-calls nil))
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (_sync-token _resource-types commands callback)
+                     (push commands sync-calls)
+                     (let* ((cmd (car commands))
+                            (temp-id (alist-get 'temp_id cmd)))
+                       (funcall callback
+                                `((sync_token . "tok-passthrough")
+                                  (temp_id_mapping . ((,temp-id . "real-999")))
+                                  (items . nil)))))))
+          (emacs-todoist-sync-heading))
+
+        ;; The numeric ID string should pass through as-is.
+        (let* ((commands (car sync-calls))
+               (cmd (car commands))
+               (args (alist-get 'args cmd)))
+          (should (equal "2349578432" (alist-get 'project_id args))))))))
+
+(ert-deftest emacs-todoist-integration/nil-project-passes-through ()
+  "When no project is configured, project_id is omitted from the command."
+  (with-org-buffer "* TODO Buy groceries\n"
+    (let ((emacs-todoist-default-project nil)
+          (emacs-todoist--project-cache '(("inbox" . "1111111111")))
+          (emacs-todoist-log-level 'error))
+      (let ((sync-calls nil))
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (_sync-token _resource-types commands callback)
+                     (push commands sync-calls)
+                     (let* ((cmd (car commands))
+                            (temp-id (alist-get 'temp_id cmd)))
+                       (funcall callback
+                                `((sync_token . "tok-nil")
+                                  (temp_id_mapping . ((,temp-id . "real-nil")))
+                                  (items . nil)))))))
+          (emacs-todoist-sync-heading))
+
+        ;; project_id should be absent from the args.
+        (let* ((commands (car sync-calls))
+               (cmd (car commands))
+               (args (alist-get 'args cmd)))
+          (should (null (alist-get 'project_id args))))))))
+
+(ert-deftest emacs-todoist-integration/project-cache-reuse ()
+  "Second push reuses the project cache without re-fetching."
+  (with-org-buffer "* TODO First task\n"
+    (let ((emacs-todoist-default-project "Agenda")
+          (emacs-todoist--project-cache :not-fetched)
+          (emacs-todoist-log-level 'error)
+          (fetch-count 0))
+      (cl-letf (((symbol-function 'emacs-todoist-api-fetch-projects)
+                 (lambda (callback)
+                   (cl-incf fetch-count)
+                   (funcall callback
+                            `((projects . (((name . "Agenda")
+                                            (id . "2349578432"))))))))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (let* ((cmd (car commands))
+                          (temp-id (alist-get 'temp_id cmd)))
+                     (funcall callback
+                              `((sync_token . "tok-reuse")
+                                (temp_id_mapping . ((,temp-id . "real-reuse")))
+                                (items . nil)))))))
+        ;; First push: should fetch projects.
+        (emacs-todoist-sync-heading)
+        (should (= 1 fetch-count)))
+
+      ;; Set up a second heading to push in the same buffer.
+      (goto-char (point-max))
+      (insert "* TODO Second task\n")
+      (forward-line -1)
+      (beginning-of-line)
+
+      (cl-letf (((symbol-function 'emacs-todoist-api-fetch-projects)
+                 (lambda (callback)
+                   (cl-incf fetch-count)
+                   (funcall callback
+                            `((projects . (((name . "Agenda")
+                                            (id . "2349578432"))))))))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (let* ((cmd (car commands))
+                          (temp-id (alist-get 'temp_id cmd)))
+                     (funcall callback
+                              `((sync_token . "tok-reuse-2")
+                                (temp_id_mapping . ((,temp-id . "real-reuse-2")))
+                                (items . nil)))))))
+        ;; Second push: should NOT fetch projects again.
+        (emacs-todoist-sync-heading)
+        (should (= 1 fetch-count))))))
+
 ;;; test-integration.el ends here

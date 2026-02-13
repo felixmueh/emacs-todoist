@@ -151,11 +151,13 @@ Returns an alist with keys:
   `sync_status'     — alist of uuid to status
   `temp_id_mapping' — alist of temp-id to real-id
   `items'           — list of item alists
+  `projects'        — list of project alists
 Missing keys in RESPONSE are returned as nil."
   `((sync_token      . ,(alist-get 'sync_token response))
     (sync_status     . ,(alist-get 'sync_status response))
     (temp_id_mapping . ,(alist-get 'temp_id_mapping response))
-    (items           . ,(alist-get 'items response))))
+    (items           . ,(alist-get 'items response))
+    (projects        . ,(alist-get 'projects response))))
 
 ;; ==============================================================================
 ;; Item hashing
@@ -235,6 +237,12 @@ Uses `url-retrieve' for asynchronous HTTP."
 Calls CALLBACK with the parsed response.  This is a read-only sync
 with no commands — only items are requested."
   (emacs-todoist-api-sync sync-token '("items") nil callback))
+
+(defun emacs-todoist-api-fetch-projects (callback)
+  "Fetch all projects from Todoist.
+Calls CALLBACK with the parsed response.  Always performs a full sync
+since projects are a session-level concern, not per-heading."
+  (emacs-todoist-api-sync "*" '("projects") nil callback))
 
 (provide 'emacs-todoist-api)
 ;;; emacs-todoist-api.el ends here
