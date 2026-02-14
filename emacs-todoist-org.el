@@ -154,6 +154,58 @@ Searches the entire current buffer."
          (push (point-marker) markers))))
     (nreverse markers)))
 
+(defun emacs-todoist-org-synced-entries-in-region (beg end)
+  "Return markers for headings with a TODOIST_ID between BEG and END."
+  (let (markers)
+    (save-excursion
+      (goto-char beg)
+      (while (re-search-forward "^[ \t]*:TODOIST_ID:" end t)
+        (save-excursion
+          (org-back-to-heading t)
+          (when (>= (point) beg)
+            (push (point-marker) markers)))))
+    (nreverse markers)))
+
+(defun emacs-todoist-org-synced-entries-in-subtree ()
+  "Return markers for headings with a TODOIST_ID in the subtree at point."
+  (save-excursion
+    (org-back-to-heading t)
+    (let ((beg (point))
+          (end (save-excursion (org-end-of-subtree t) (point))))
+      (emacs-todoist-org-synced-entries-in-region beg end))))
+
+(defun emacs-todoist-org-todo-entries ()
+  "Return markers for all TODO headings in the buffer (any TODO keyword)."
+  (let (markers)
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (while (re-search-forward org-heading-regexp nil t)
+       (beginning-of-line)
+       (when (org-get-todo-state)
+         (push (point-marker) markers))
+       (end-of-line)))
+    (nreverse markers)))
+
+(defun emacs-todoist-org-todo-entries-in-region (beg end)
+  "Return markers for TODO headings between BEG and END."
+  (let (markers)
+    (save-excursion
+      (goto-char beg)
+      (while (re-search-forward org-heading-regexp end t)
+        (beginning-of-line)
+        (when (and (>= (point) beg) (org-get-todo-state))
+          (push (point-marker) markers))
+        (end-of-line)))
+    (nreverse markers)))
+
+(defun emacs-todoist-org-todo-entries-in-subtree ()
+  "Return markers for TODO headings in the subtree at point."
+  (save-excursion
+    (org-back-to-heading t)
+    (let ((beg (point))
+          (end (save-excursion (org-end-of-subtree t) (point))))
+      (emacs-todoist-org-todo-entries-in-region beg end))))
+
 ;; ==============================================================================
 ;; Remote data application
 ;; ==============================================================================

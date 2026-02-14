@@ -677,4 +677,301 @@ defensive check that shouldn't happen in practice."
         (emacs-todoist-sync-heading)
         (should (= 1 fetch-count))))))
 
+;; ==============================================================================
+;; Bulk sync (sync-buffer)
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/sync-buffer-all-same-token-incremental ()
+  "When all headings share the same sync token, uses it for an incremental fetch."
+  (with-org-buffer
+      (concat "* TODO H1\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: tok-A\n:TODOIST_LOCAL_HASH: x\n"
+              ":TODOIST_REMOTE_HASH: y\n:END:\n"
+              "* TODO H2\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+              ":TODOIST_SYNC_TOKEN: tok-A\n:TODOIST_LOCAL_HASH: x\n"
+              ":TODOIST_REMOTE_HASH: y\n:END:\n")
+    (let ((emacs-todoist-log-level 'error))
+      (let ((fetch-token nil))
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (sync-token _resource-types commands callback)
+                     (when (null commands)
+                       (setq fetch-token sync-token))
+                     (funcall callback
+                              `((sync_token . "tok-B")
+                                (items . nil))))))
+          (emacs-todoist-sync-buffer))
+        ;; Should have used the shared token, not "*".
+        (should (equal "tok-A" fetch-token))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-mixed-tokens-full-sync ()
+  "When headings have different sync tokens, uses \"*\" for a full sync."
+  (with-org-buffer
+      (concat "* TODO H1\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: tok-A\n:END:\n"
+              "* TODO H2\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+              ":TODOIST_SYNC_TOKEN: tok-B\n:END:\n")
+    ;; Store matching local hashes so headings appear locally unchanged
+    ;; (we only care about which token is used for the fetch).
+    (goto-char (point-min))
+    (re-search-forward "^\\* TODO H1") (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+    (re-search-forward "^\\* TODO H2") (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+    (let ((emacs-todoist-log-level 'error))
+      (let ((fetch-token nil))
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (sync-token _resource-types _commands callback)
+                     (when (null fetch-token)
+                       (setq fetch-token sync-token))
+                     ;; Return both items so full sync doesn't trigger
+                     ;; deletion prompts.
+                     (funcall callback
+                              `((sync_token . "tok-C")
+                                (items . (((id . "t1") (content . "H1")
+                                           (description . "") (due) (checked . 0))
+                                          ((id . "t2") (content . "H2")
+                                           (description . "") (due) (checked . 0)))))))))
+          (emacs-todoist-sync-buffer))
+        (should (equal "*" fetch-token))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-no-entries ()
+  "Sync-buffer with no synced headings messages 'no headings to sync'."
+  (with-org-buffer "* TODO Plain heading\n* Another plain\n"
+    (let ((emacs-todoist-log-level 'error)
+          (msg nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+        (emacs-todoist-sync-buffer))
+      (should (string-match-p "no headings" msg)))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-mix-push-pull-skip ()
+  "Sync-buffer classifies headings correctly: push, pull, and skip."
+  (with-org-buffer
+      ;; H1: local changed (stale local hash) → push
+      ;; H2: remote changed → pull
+      ;; H3: neither changed → skip
+      (concat "* TODO H1 local-changed\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: tok-X\n:TODOIST_LOCAL_HASH: stale\n"
+              ":TODOIST_REMOTE_HASH: r1\n:END:\n"
+              "* TODO H2 remote-changed\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+              ":TODOIST_SYNC_TOKEN: tok-X\n:TODOIST_REMOTE_HASH: stale-remote\n"
+              ":END:\n"
+              "* TODO H3 unchanged\n:PROPERTIES:\n:TODOIST_ID: t3\n"
+              ":TODOIST_SYNC_TOKEN: tok-X\n:END:\n")
+    ;; Compute and store matching hashes for H2 (local unchanged) and H3.
+    (goto-char (point-min))
+    (re-search-forward "^\\* TODO H2")
+    (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+    (re-search-forward "^\\* TODO H3")
+    (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+    ;; H3 remote hash must match what the API returns.
+    (let* ((h3-remote `((content . "H3 unchanged")
+                         (description . "")
+                         (due) (checked . 0)))
+           (h3-hash (emacs-todoist-api-hash-item h3-remote)))
+      (org-entry-put (point) "TODOIST_REMOTE_HASH" h3-hash))
+
+    (let ((emacs-todoist-log-level 'error)
+          (push-commands nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (if (null commands)
+                       ;; Fetch call: return items for t2 (changed) and t3 (unchanged).
+                       (funcall callback
+                                `((sync_token . "tok-Y")
+                                  (items . (((id . "t2")
+                                             (content . "H2 UPDATED remotely")
+                                             (description . "")
+                                             (due) (checked . 0))
+                                            ((id . "t3")
+                                             (content . "H3 unchanged")
+                                             (description . "")
+                                             (due) (checked . 0))))))
+                     ;; Push call.
+                     (setq push-commands commands)
+                     (funcall callback
+                              `((sync_token . "tok-Z")
+                                (items . nil)))))))
+        (emacs-todoist-sync-buffer))
+
+      ;; H1 should have been pushed (item_update in commands).
+      (should push-commands)
+      (should (cl-some (lambda (cmd)
+                         (and (equal "item_update" (alist-get 'type cmd))
+                              (equal "t1" (alist-get 'id (alist-get 'args cmd)))))
+                       push-commands))
+
+      ;; H2 should have been pulled (title updated).
+      (goto-char (point-min))
+      (re-search-forward "^\\* TODO H2")
+      (beginning-of-line)
+      (should (equal "H2 UPDATED remotely" (emacs-todoist-org-heading-title)))
+
+      ;; H3 should be unchanged.
+      (re-search-forward "^\\* TODO H3")
+      (beginning-of-line)
+      (should (equal "H3 unchanged" (emacs-todoist-org-heading-title))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-batch-push-single-call ()
+  "All update + add commands go in a single API call."
+  (with-org-buffer
+      (concat "* TODO Existing\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: tok-A\n:TODOIST_LOCAL_HASH: stale\n"
+              ":TODOIST_REMOTE_HASH: r1\n:END:\n")
+    (let ((emacs-todoist-log-level 'error)
+          (api-call-count 0))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (cl-incf api-call-count)
+                   (funcall callback
+                            `((sync_token . "tok-final")
+                              (items . nil))))))
+        (emacs-todoist-sync-buffer))
+      ;; Should be exactly 2 calls: one fetch, one push.
+      (should (= 2 api-call-count)))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-updates-token-on-all-headings ()
+  "After sync, all headings get the new sync token."
+  (with-org-buffer
+      (concat "* TODO H1\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: old\n:END:\n"
+              "* TODO H2\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+              ":TODOIST_SYNC_TOKEN: old\n:END:\n")
+    ;; Store matching local hashes so headings appear unchanged.
+    (goto-char (point-min))
+    (re-search-forward "^\\* TODO H1") (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+    (re-search-forward "^\\* TODO H2") (beginning-of-line)
+    (org-entry-put (point) "TODOIST_LOCAL_HASH"
+                   (emacs-todoist-org-heading-local-hash))
+
+    (let ((emacs-todoist-log-level 'error))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            `((sync_token . "new-tok")
+                              (items . nil))))))
+        (emacs-todoist-sync-buffer)))
+
+    ;; Both headings should have the new token.
+    (goto-char (point-min))
+    (re-search-forward "^\\* TODO H1") (beginning-of-line)
+    (should (equal "new-tok" (org-entry-get (point) "TODOIST_SYNC_TOKEN")))
+    (re-search-forward "^\\* TODO H2") (beginning-of-line)
+    (should (equal "new-tok" (org-entry-get (point) "TODOIST_SYNC_TOKEN")))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-with-prefix-pushes-new-headings ()
+  "With prefix arg, sync-buffer pushes new TODO headings without TODOIST_ID."
+  (with-org-buffer "* TODO Brand new task\nSome description.\n"
+    (let ((emacs-todoist-log-level 'error)
+          (emacs-todoist--project-cache '(("inbox" . "111")))
+          (pushed-commands nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (when commands
+                     (setq pushed-commands commands))
+                   (let* ((cmd (car commands))
+                          (temp-id (and cmd (alist-get 'temp_id cmd))))
+                     (funcall callback
+                              `((sync_token . "tok-new")
+                                (temp_id_mapping
+                                 . ,(when temp-id
+                                      `((,temp-id . "real-new-1"))))
+                                (items . nil)))))))
+        ;; Pass non-nil for include-new (simulating C-u).
+        (emacs-todoist-sync-buffer t))
+
+      ;; Should have sent item_add.
+      (should pushed-commands)
+      (should (cl-some (lambda (cmd)
+                         (equal "item_add" (alist-get 'type cmd)))
+                       pushed-commands))
+      ;; ID should be written back.
+      (should (equal "real-new-1" (org-entry-get (point) "TODOIST_ID"))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-without-prefix-skips-new-headings ()
+  "Without prefix arg, sync-buffer skips headings without TODOIST_ID."
+  (with-org-buffer "* TODO Brand new task\n"
+    (let ((emacs-todoist-log-level 'error)
+          (msg nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+        (emacs-todoist-sync-buffer))
+      ;; No TODOIST_ID headings + no prefix → nothing to sync.
+      (should (string-match-p "no headings" msg))
+      (should (null (org-entry-get (point) "TODOIST_ID"))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-deletion-on-full-sync ()
+  "On full sync, a missing task triggers deletion handling."
+  (with-org-buffer
+      (concat "* TODO Present task\n:PROPERTIES:\n:TODOIST_ID: t1\n"
+              ":TODOIST_SYNC_TOKEN: *\n:TODOIST_LOCAL_HASH: h\n"
+              ":TODOIST_REMOTE_HASH: r\n:END:\n"
+              "* TODO Deleted task\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+              ":TODOIST_SYNC_TOKEN: *\n:TODOIST_LOCAL_HASH: h\n"
+              ":TODOIST_REMOTE_HASH: r\n:END:\n")
+    (let ((emacs-todoist-log-level 'error)
+          (deletion-prompted nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   ;; Full sync returns only t1, not t2.
+                   (funcall callback
+                            `((sync_token . "tok-del")
+                              (items . (((id . "t1")
+                                         (content . "Present task")
+                                         (description . "")
+                                         (due) (checked . 0))))))))
+                ;; Mock deletion handler to choose "keep & unlink".
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars)
+                   (setq deletion-prompted t)
+                   ?k)))
+        (emacs-todoist-sync-buffer))
+      ;; Should have prompted for the deleted task.
+      (should deletion-prompted)
+      ;; t2 should be unlinked (no TODOIST_ID).
+      (goto-char (point-min))
+      (re-search-forward "^\\* TODO Deleted")
+      (beginning-of-line)
+      (should (null (org-entry-get (point) "TODOIST_ID"))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-new-heading-ids-written-back ()
+  "New headings get their real IDs from temp_id_mapping after bulk push."
+  (with-org-buffer
+      (concat "* TODO New parent\n"
+              "** TODO New child\n")
+    (let ((emacs-todoist-log-level 'error)
+          (emacs-todoist--project-cache '(("inbox" . "111"))))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   ;; Map all temp_ids to sequential real IDs.
+                   (let ((mapping nil)
+                         (counter 500))
+                     (dolist (cmd commands)
+                       (when-let* ((tid (alist-get 'temp_id cmd)))
+                         (push (cons tid (format "real-%d" counter)) mapping)
+                         (cl-incf counter)))
+                     (funcall callback
+                              `((sync_token . "tok-ids")
+                                (temp_id_mapping . ,mapping)
+                                (items . nil)))))))
+        (emacs-todoist-sync-buffer t))
+
+      ;; Parent should have an ID.
+      (goto-char (point-min))
+      (re-search-forward "^\\* TODO New parent") (beginning-of-line)
+      (should (org-entry-get (point) "TODOIST_ID"))
+      (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID")))
+      ;; Child should have an ID.
+      (re-search-forward "^\\*\\* TODO New child") (beginning-of-line)
+      (should (org-entry-get (point) "TODOIST_ID"))
+      (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID"))))))
+
 ;;; test-integration.el ends here

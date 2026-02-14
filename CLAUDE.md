@@ -14,9 +14,9 @@ emacs-todoist.el  (integration: config, sync logic, interactive commands)
   └── emacs-todoist-api.el  (Todoist Sync API wrapper, no org dependency)
 ```
 
-- **`emacs-todoist-org.el`** — 13 functions. All assume point is on
+- **`emacs-todoist-org.el`** — All assume point is on
   an org heading. No network calls. Testable in isolation.
-- **`emacs-todoist-api.el`** — 12 functions. Stateless: sync tokens
+- **`emacs-todoist-api.el`** — Stateless: sync tokens
   passed in by callers, new tokens returned. Uses `url-retrieve`
   (built-in async). No org dependency.
 - **`emacs-todoist.el`** — Wires org + api together. All async logic
@@ -57,11 +57,11 @@ Both hashes update together after each successful sync.
 ## Testing
 
 ```sh
-make test              # All 97 mock tests (39 org + 36 api + 21 integration + 1 smoke)
+make test              # All mock tests
 make test-org          # Only org module tests
 make test-api          # Only API tests (no HTTP, no rate limits)
 make test-integration  # Only integration tests
-make test-live         # 8 live API tests (requires valid token, see below)
+make test-live         # live API tests (requires valid token, see below)
 
 # Filter by file and pattern:
 make test FILE=test-org MATCH=description
@@ -125,10 +125,10 @@ the project root (this file is gitignored).
 ## Implementation phases
 
 - [x] Phase 0: Dev tooling (Makefile, test runner)
-- [x] Phase 1: Org module — 13 functions + 39 tests
-- [x] Phase 2: API module — 12 functions + 36 tests
-- [x] Phase 3: Integration layer — sync logic, logging, 14 tests
-- [ ] Phase 4: Bulk sync + frontend
+- [x] Phase 1: Org module
+- [x] Phase 2: API module
+- [x] Phase 3: Integration layer — sync logic, logging, 36 tests
+- [ ] Phase 4: Bulk sync + frontend (bulk sync commands done, frontend TODO)
 - [ ] Phase 5: Polish (README.org, autoloads, package headers)
 
 ## Phase 4: Bulk sync + frontend (next up)

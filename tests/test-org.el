@@ -361,4 +361,97 @@ Point is placed at the first heading."
       (should (= (length (alist-get 'children alist)) 2))
       (should (equal (alist-get 'project alist) "TestProj")))))
 
+;; ==============================================================================
+;; todo-entries
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-org-todo-entries-finds-all ()
+  "Returns markers for all TODO/DONE headings, skipping plain headings."
+  (with-org-buffer
+      (concat "* TODO Task A\n"
+              "* Plain heading\n"
+              "* DONE Task B\n"
+              "* TODO Task C\n")
+    (let ((entries (emacs-todoist-org-todo-entries)))
+      (should (= 3 (length entries))))))
+
+(ert-deftest emacs-todoist-org-todo-entries-empty-buffer ()
+  "Returns nil when buffer has no TODO headings."
+  (with-org-buffer "* Just a heading\n* Another one\n"
+    (should (null (emacs-todoist-org-todo-entries)))))
+
+;; ==============================================================================
+;; todo-entries-in-region
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-org-todo-entries-in-region-limits-scope ()
+  "Returns only TODO headings within the specified region."
+  (with-org-buffer
+      (concat "* TODO Outside before\n"
+              "* TODO Inside A\n"
+              "* TODO Inside B\n"
+              "* Plain inside\n"
+              "* TODO Outside after\n")
+    ;; Find the region boundaries around "Inside A" and "Inside B".
+    (goto-char (point-min))
+    (re-search-forward "^\\* TODO Inside A")
+    (beginning-of-line)
+    (let ((beg (point)))
+      (re-search-forward "^\\* TODO Outside after")
+      (beginning-of-line)
+      (let* ((end (point))
+             (entries (emacs-todoist-org-todo-entries-in-region beg end)))
+        (should (= 2 (length entries)))))))
+
+;; ==============================================================================
+;; todo-entries-in-subtree
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-org-todo-entries-in-subtree-nested ()
+  "Returns TODO headings in the subtree at point, including the root."
+  (with-org-buffer
+      (concat "* TODO Parent\n"
+              "** TODO Child A\n"
+              "** Plain child\n"
+              "** TODO Child B\n"
+              "* TODO Sibling (outside)\n")
+    (let ((entries (emacs-todoist-org-todo-entries-in-subtree)))
+      (should (= 3 (length entries))))))
+
+;; ==============================================================================
+;; synced-entries-in-region
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-org-synced-entries-in-region-limits-scope ()
+  "Returns only TODOIST_ID headings within the specified region."
+  (with-org-buffer
+      (concat "* H1\n:PROPERTIES:\n:TODOIST_ID: 1\n:END:\n"
+              "* H2\n:PROPERTIES:\n:TODOIST_ID: 2\n:END:\n"
+              "* H3\n"
+              "* H4\n:PROPERTIES:\n:TODOIST_ID: 4\n:END:\n")
+    ;; Region covers H2 and H3 only.
+    (goto-char (point-min))
+    (re-search-forward "^\\* H2")
+    (beginning-of-line)
+    (let ((beg (point)))
+      (re-search-forward "^\\* H4")
+      (beginning-of-line)
+      (let* ((end (point))
+             (entries (emacs-todoist-org-synced-entries-in-region beg end)))
+        (should (= 1 (length entries)))))))
+
+;; ==============================================================================
+;; synced-entries-in-subtree
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-org-synced-entries-in-subtree-nested ()
+  "Returns synced headings within the subtree at point."
+  (with-org-buffer
+      (concat "* Parent\n:PROPERTIES:\n:TODOIST_ID: 1\n:END:\n"
+              "** Child synced\n:PROPERTIES:\n:TODOIST_ID: 2\n:END:\n"
+              "** Child plain\n"
+              "* Sibling\n:PROPERTIES:\n:TODOIST_ID: 3\n:END:\n")
+    (let ((entries (emacs-todoist-org-synced-entries-in-subtree)))
+      (should (= 2 (length entries))))))
+
 ;;; test-org.el ends here
