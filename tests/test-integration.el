@@ -896,6 +896,54 @@ defensive check that shouldn't happen in practice."
       ;; ID should be written back.
       (should (equal "real-new-1" (org-entry-get (point) "TODOIST_ID"))))))
 
+(ert-deftest emacs-todoist-integration/sync-buffer-new-children-not-duplicated ()
+  "Children of new headings are pushed only once (via parent), not independently."
+  (with-org-buffer
+      (concat "* TODO Parent task\n"
+              "** TODO Child task\n")
+    (let ((emacs-todoist-log-level 'error)
+          (emacs-todoist--project-cache '(("inbox" . "111")))
+          (pushed-commands nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (when commands
+                     (setq pushed-commands commands))
+                   ;; Build temp_id_mapping for all item_add commands.
+                   (let ((mapping nil)
+                         (counter 0))
+                     (dolist (cmd commands)
+                       (when (equal "item_add" (alist-get 'type cmd))
+                         (let ((tid (alist-get 'temp_id cmd)))
+                           (push (cons tid (format "real-%d" (cl-incf counter)))
+                                 mapping))))
+                     (funcall callback
+                              `((sync_token . "tok-new")
+                                (temp_id_mapping . ,mapping)
+                                (items . nil)))))))
+        (emacs-todoist-sync-buffer t))
+
+      ;; Should have exactly 2 item_add commands: one parent, one child.
+      (let ((add-cmds (cl-remove-if-not
+                       (lambda (cmd)
+                         (equal "item_add" (alist-get 'type cmd)))
+                       pushed-commands)))
+        (should (= 2 (length add-cmds)))
+        ;; The child should reference the parent via parent_id.
+        (let* ((parent-cmd (cl-find-if
+                            (lambda (cmd)
+                              (equal "Parent task"
+                                     (alist-get 'content (alist-get 'args cmd))))
+                            add-cmds))
+               (child-cmd (cl-find-if
+                           (lambda (cmd)
+                             (equal "Child task"
+                                    (alist-get 'content (alist-get 'args cmd))))
+                           add-cmds)))
+          (should parent-cmd)
+          (should child-cmd)
+          (should (equal (alist-get 'temp_id parent-cmd)
+                         (alist-get 'parent_id (alist-get 'args child-cmd)))))))))
+
 (ert-deftest emacs-todoist-integration/sync-buffer-without-prefix-skips-new-headings ()
   "Without prefix arg, sync-buffer skips headings without TODOIST_ID."
   (with-org-buffer "* TODO Brand new task\n"

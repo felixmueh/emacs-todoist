@@ -776,6 +776,19 @@ PULLED and SKIPPED are counters for the summary message."
   (let ((new-entries '())
         (all-commands (copy-sequence (or push-commands '()))))
     ;; Step 4: build item_add commands for each new heading.
+    ;; Filter out children whose parent is also in new-markers, since
+    ;; `emacs-todoist--build-new-heading-commands' already creates
+    ;; item_add commands for direct children of each heading.
+    (let ((marker-positions (mapcar #'marker-position new-markers)))
+      (setq new-markers
+            (cl-remove-if
+             (lambda (m)
+               (with-current-buffer (marker-buffer m)
+                 (save-excursion
+                   (goto-char m)
+                   (and (org-up-heading-safe)
+                        (memq (point) marker-positions)))))
+             new-markers)))
     (dolist (marker new-markers)
       (with-current-buffer (marker-buffer marker)
         (save-excursion
