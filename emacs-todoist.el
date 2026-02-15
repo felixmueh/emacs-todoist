@@ -436,6 +436,28 @@ SYNC-TOKEN is the new token to store."
     (emacs-todoist-log 'info "Pulled remote changes for: %s" title)
     (message "emacs-todoist: pulled remote changes for \"%s\"" title)))
 
+(defun emacs-todoist--sync-children (items sync-token)
+  "Sync child headings of the heading at point using ITEMS from the API response.
+For each direct child that has a TODOIST_ID and a matching item in
+ITEMS, pull remote changes if the remote hash differs.  This handles
+the case where Todoist cascades state changes to subtasks (e.g.
+completing a parent also completes its children)."
+  (dolist (child-marker (emacs-todoist-org-heading-children))
+    (save-excursion
+      (goto-char child-marker)
+      (let* ((child-id (org-entry-get (point) "TODOIST_ID"))
+             (child-remote-hash (org-entry-get (point) "TODOIST_REMOTE_HASH")))
+        (when child-id
+          (let ((child-item
+                 (cl-find-if (lambda (item)
+                               (equal (format "%s" (alist-get 'id item))
+                                      child-id))
+                             items)))
+            (when child-item
+              (let ((new-hash (emacs-todoist-api-hash-item child-item)))
+                (unless (equal new-hash child-remote-hash)
+                  (emacs-todoist--apply-pull child-item sync-token))))))))))
+
 ;; ==============================================================================
 ;; Handle remote deletion
 ;; ==============================================================================
@@ -546,7 +568,11 @@ the appropriate push/pull/conflict handler."
                          (message "emacs-todoist: already up to date"))
 
                         ;; Only remote changed → pull.
+                        ;; Sync children first so that completing a parent
+                        ;; is not blocked by `org-enforce-todo-dependencies'
+                        ;; when children are still TODO.
                         ((and (not local-changed) remote-changed)
+                         (emacs-todoist--sync-children items new-sync-token)
                          (emacs-todoist--apply-pull remote-item new-sync-token))
 
                         ;; Only local changed → push.
@@ -563,7 +589,9 @@ the appropriate push/pull/conflict handler."
                            (pcase choice
                              (?l (emacs-todoist--push-update
                                   todoist-id stored-sync-token new-sync-token))
-                             (?r (emacs-todoist--apply-pull
+                             (?r (emacs-todoist--sync-children
+                                  items new-sync-token)
+                                 (emacs-todoist--apply-pull
                                   remote-item new-sync-token))))))))
 
                     ;; Task not found and we did a full sync → deleted remotely.

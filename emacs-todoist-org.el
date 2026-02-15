@@ -45,7 +45,8 @@
 planning lines, and sub-headings.  Returns \"\" when there is no body."
   (save-excursion
     (org-back-to-heading t)
-    (let* ((element (org-element-at-point))
+    (let* ((level (org-current-level))
+           (element (org-element-at-point))
            ;; `contents-begin' is where the heading's body starts (after
            ;; the headline itself).  `contents-end' is where it ends
            ;; (before the next heading at the same or higher level).
@@ -67,16 +68,16 @@ planning lines, and sub-headings.  Returns \"\" when there is no body."
             (forward-char 1)))
         (let ((body-begin (point))
               ;; Find where the first child heading starts, if any.
+              ;; We use the level captured while point was on the heading
+              ;; line — after skipping the property drawer, point may have
+              ;; landed on a child heading, which would give the wrong level.
               (first-child-pos
                (save-excursion
-                 (let ((level (org-current-level)))
-                   ;; We're inside the heading's contents.  Search for
-                   ;; the next heading that is deeper (a child).
-                   (if (re-search-forward
-                        (format "^\\*\\{%d,\\} " (1+ level))
-                        contents-end t)
-                       (match-beginning 0)
-                     nil)))))
+                 (if (re-search-forward
+                      (format "^\\*\\{%d,\\} " (1+ level))
+                      contents-end t)
+                     (match-beginning 0)
+                   nil))))
           (let* ((body-end (or first-child-pos contents-end))
                  (text (string-trim
                         (buffer-substring-no-properties body-begin body-end))))
@@ -245,10 +246,11 @@ DATA keys:
 
 (defun emacs-todoist-org--replace-body (new-body)
   "Replace the body text of the heading at point with NEW-BODY.
-Preserves the property drawer and planning lines."
+Preserves the property drawer, planning lines, and child headings."
   (save-excursion
     (org-back-to-heading t)
-    (let* ((element (org-element-at-point))
+    (let* ((level (org-current-level))
+           (element (org-element-at-point))
            (contents-begin (org-element-property :contents-begin element))
            (contents-end   (org-element-property :contents-end element)))
       (when (and contents-begin contents-end)
@@ -263,14 +265,16 @@ Preserves the property drawer and planning lines."
             (forward-char 1)))
         (let ((body-begin (point))
               ;; Find where the first child heading starts, if any.
+              ;; Level was captured while point was on the heading line;
+              ;; after skipping the property drawer, point may sit on a
+              ;; child heading which would yield the wrong level.
               (first-child-pos
                (save-excursion
-                 (let ((level (org-current-level)))
-                   (if (re-search-forward
-                        (format "^\\*\\{%d,\\} " (1+ level))
-                        contents-end t)
-                       (match-beginning 0)
-                     nil)))))
+                 (if (re-search-forward
+                      (format "^\\*\\{%d,\\} " (1+ level))
+                      contents-end t)
+                     (match-beginning 0)
+                   nil))))
           (let ((body-end (or first-child-pos contents-end)))
             (delete-region body-begin body-end)
             (goto-char body-begin)

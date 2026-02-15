@@ -1022,4 +1022,134 @@ defensive check that shouldn't happen in practice."
       (should (org-entry-get (point) "TODOIST_ID"))
       (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID"))))))
 
+;; ==============================================================================
+;; Sync heading with children — remote completion
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/sync-parent-completed-remotely-no-conflict ()
+  "Syncing a parent completed remotely should pull cleanly, not report a conflict.
+Reproduces a bug where syncing a parent with a child heading falsely
+detected a conflict (local-changed was true) even though the org buffer
+was unmodified.  Also verifies that children are synced before the
+parent so that `org-enforce-todo-dependencies' does not block the
+parent's state change."
+  (with-org-buffer "* TODO test1\n** TODO test2\n"
+    ;; Enable the blocker hook that org-enforce-todo-dependencies uses.
+    ;; Setting the variable alone doesn't activate the :set function in
+    ;; batch mode, so we add the hook directly.
+    (add-hook 'org-blocker-hook
+              #'org-block-todo-from-children-or-siblings-or-parent)
+    ;; Simulate initial push: write properties as if both headings were
+    ;; already synced to Todoist.
+    (let* ((parent-local-hash (emacs-todoist-org-heading-local-hash))
+           (parent-remote-item `((content . "test1")
+                                 (description . "")
+                                 (due . nil)
+                                 (checked . 0)))
+           (parent-remote-hash (emacs-todoist-api-hash-item parent-remote-item)))
+      (emacs-todoist-org-set-props
+       `(("TODOIST_ID"          . "parent-1")
+         ("TODOIST_LOCAL_HASH"  . ,parent-local-hash)
+         ("TODOIST_REMOTE_HASH" . ,parent-remote-hash)
+         ("TODOIST_SYNC_TOKEN"  . "tok-0")))
+      ;; Also set up the child heading.
+      (save-excursion
+        (org-goto-first-child)
+        (let* ((child-local-hash (emacs-todoist-org-heading-local-hash))
+               (child-remote-item `((content . "test2")
+                                    (description . "")
+                                    (due . nil)
+                                    (checked . 0)))
+               (child-remote-hash (emacs-todoist-api-hash-item child-remote-item)))
+          (emacs-todoist-org-set-props
+           `(("TODOIST_ID"          . "child-1")
+             ("TODOIST_LOCAL_HASH"  . ,child-local-hash)
+             ("TODOIST_REMOTE_HASH" . ,child-remote-hash)
+             ("TODOIST_SYNC_TOKEN"  . "tok-0"))))))
+
+    ;; Now verify the local hash is still consistent (the bug is that
+    ;; writing child properties causes parent's local hash to change).
+    (let ((current-local-hash (emacs-todoist-org-heading-local-hash))
+          (stored-local-hash (org-entry-get (point) "TODOIST_LOCAL_HASH")))
+      (should (equal current-local-hash stored-local-hash)))
+
+    ;; Mock: remote returns parent as completed (checked=1).
+    (let ((conflict-prompted nil))
+      (with-mock-sync nil
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (sync-token _resource-types commands callback)
+                     (push (list (cons 'sync-token sync-token)
+                                 (cons 'commands commands))
+                           emacs-todoist-test--sync-calls)
+                     ;; Todoist completes children when parent is completed,
+                     ;; so the response includes both items.
+                     (funcall callback
+                              `((sync_token . "tok-1")
+                                (items . (((id . "parent-1")
+                                           (content . "test1")
+                                           (description . "")
+                                           (due . nil)
+                                           (checked . 1))
+                                          ((id . "child-1")
+                                           (content . "test2")
+                                           (description . "")
+                                           (due . nil)
+                                           (checked . 1))))))))
+                  ;; Intercept read-char-choice to detect false conflict.
+                  ((symbol-function 'read-char-choice)
+                   (lambda (_prompt _chars)
+                     (setq conflict-prompted t)
+                     ?r)))
+          (emacs-todoist-sync-heading))
+
+        ;; No conflict should have been prompted.
+        (should-not conflict-prompted))
+
+      ;; Parent should now be DONE.
+      (should (equal "DONE" (org-get-todo-state)))
+      ;; Child should also be DONE (cascaded from Todoist).
+      (save-excursion
+        (org-goto-first-child)
+        (should (equal "DONE" (org-get-todo-state))))
+      ;; Sync token should be updated on both headings.
+      (should (equal "tok-1" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+(ert-deftest emacs-todoist-integration/pull-parent-preserves-child-properties ()
+  "Pulling remote changes to parent must not remove child heading properties.
+Reproduces a bug where `emacs-todoist-org-apply-remote' (via
+`--replace-body') clobbered the child heading's property drawer."
+  (with-org-buffer "* TODO test1\n** TODO test2\n"
+    ;; Set up both headings as synced.
+    (emacs-todoist-org-set-props
+     '(("TODOIST_ID"          . "parent-1")
+       ("TODOIST_LOCAL_HASH"  . "hash-p")
+       ("TODOIST_REMOTE_HASH" . "hash-p-remote")
+       ("TODOIST_SYNC_TOKEN"  . "tok-0")))
+    (save-excursion
+      (org-goto-first-child)
+      (emacs-todoist-org-set-props
+       '(("TODOIST_ID"          . "child-1")
+         ("TODOIST_LOCAL_HASH"  . "hash-c")
+         ("TODOIST_REMOTE_HASH" . "hash-c-remote")
+         ("TODOIST_SYNC_TOKEN"  . "tok-0"))))
+
+    ;; Apply a remote pull to the parent (completing it).
+    (emacs-todoist-org-apply-remote
+     '((content . "test1")
+       (description . "")
+       (due . nil)
+       (checked . 1)))
+
+    ;; Parent should be DONE.
+    (should (equal "DONE" (org-get-todo-state)))
+
+    ;; Child heading must still exist and retain all its properties.
+    (save-excursion
+      (should (org-goto-first-child))
+      (should (equal "test2" (emacs-todoist-org-heading-title)))
+      (should (equal "child-1" (org-entry-get (point) "TODOIST_ID")))
+      (should (equal "hash-c" (org-entry-get (point) "TODOIST_LOCAL_HASH")))
+      (should (equal "hash-c-remote" (org-entry-get (point) "TODOIST_REMOTE_HASH")))
+      (should (equal "tok-0" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
 ;;; test-integration.el ends here
