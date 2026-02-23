@@ -9,6 +9,23 @@
 
 ;; Stateless Todoist Sync API v1 wrapper.  No org-mode dependency.
 ;; Sync tokens are passed in by callers and new tokens returned.
+;;
+;; The module targets the Sync API v1 endpoint at
+;; https://api.todoist.com/api/v1/sync (not the older v9).
+;;
+;; Public API groups:
+;;   Token:       -api-token (handles string or function)
+;;   UUID:        -api-generate-uuid (RFC 4122 v4)
+;;   Commands:    -api-build-command, -api-item-add, -api-item-update,
+;;                -api-item-complete, -api-item-uncomplete, -api-item-delete
+;;   Parsing:     -api-parse-response (extracts sync_token, items, etc.)
+;;   Hashing:     -api-hash-item (SHA-1 of sync-relevant fields)
+;;   HTTP:        -api-sync (core async call), -api-fetch-items, -api-fetch-projects
+;;
+;; All HTTP is async via `url-retrieve'.  Callers pass a CALLBACK that
+;; receives the parsed response alist.  The `checked' field from the API
+;; can be `t', `:json-false', 0, 1, or nil — see `emacs-todoist-api-hash-item'
+;; for the canonical normalization pattern.
 
 ;;; Code:
 

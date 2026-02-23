@@ -11,6 +11,16 @@
 ;; No API calls — easily testable in isolation.
 ;;
 ;; All functions assume point is on an org heading unless noted otherwise.
+;;
+;; Public API groups:
+;;   Field extraction:  -heading-title, -heading-deadline, -heading-description,
+;;                      -heading-todo-state, -heading-to-alist
+;;   Property I/O:      -heading-props, -set-props
+;;   Change detection:  -heading-local-hash, -heading-local-changed-p
+;;   Tree traversal:    -heading-children, -synced-entries, -todo-entries
+;;                      (+ -in-region / -in-subtree variants)
+;;   Remote application: -apply-remote, --replace-body
+;;   Project resolution: -resolve-project (heading prop → file keyword → default)
 
 ;;; Code:
 

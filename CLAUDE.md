@@ -14,27 +14,116 @@ emacs-todoist.el  (integration: config, sync logic, interactive commands)
   └── emacs-todoist-api.el  (Todoist Sync API wrapper, no org dependency)
 ```
 
-- **`emacs-todoist-org.el`** — All assume point is on
-  an org heading. No network calls. Testable in isolation.
-- **`emacs-todoist-api.el`** — Stateless: sync tokens
-  passed in by callers, new tokens returned. Uses `url-retrieve`
-  (built-in async). No org dependency.
-- **`emacs-todoist.el`** — Wires org + api together. All async logic
-  uses callback chains since `url-retrieve` is async. Contains
-  `defcustom` declarations, logging, sync logic, and interactive
-  commands.
+- **`emacs-todoist-org.el`** (322 lines) — Pure org-mode operations.
+  All functions assume point is on an org heading. No network calls.
+  Testable in isolation.
+- **`emacs-todoist-api.el`** (251 lines) — Stateless Todoist Sync
+  API v1 wrapper. Sync tokens passed in by callers, new tokens
+  returned. Uses `url-retrieve` (built-in async). No org dependency.
+- **`emacs-todoist.el`** (944 lines) — Wires org + api together.
+  All async logic uses callback chains since `url-retrieve` is async.
+  Contains `defcustom` declarations, logging, project cache, sync
+  logic, and all interactive commands.
+
+### Module function map
+
+**`emacs-todoist-org.el`** — field extraction and org tree operations:
+
+| Function | Purpose |
+|----------|---------|
+| `emacs-todoist-org-heading-title` | Heading text without TODO/priority/tags |
+| `emacs-todoist-org-heading-deadline` | DEADLINE as "YYYY-MM-DD" or nil |
+| `emacs-todoist-org-heading-description` | Body text (excludes drawers, planning, children) |
+| `emacs-todoist-org-heading-todo-state` | TODO state string or nil |
+| `emacs-todoist-org-heading-props` | Alist of all TODOIST_* properties |
+| `emacs-todoist-org-set-props` | Write alist of TODOIST_* properties |
+| `emacs-todoist-org-heading-local-hash` | SHA-1 of (title, deadline, desc, state) |
+| `emacs-todoist-org-heading-local-changed-p` | Compare current vs stored hash |
+| `emacs-todoist-org-heading-children` | Markers for direct child headings |
+| `emacs-todoist-org-synced-entries` | All headings with TODOIST_ID in buffer |
+| `emacs-todoist-org-synced-entries-in-region` | Synced headings in region |
+| `emacs-todoist-org-synced-entries-in-subtree` | Synced headings in subtree |
+| `emacs-todoist-org-todo-entries` | All TODO headings in buffer |
+| `emacs-todoist-org-todo-entries-in-region` | TODO headings in region |
+| `emacs-todoist-org-todo-entries-in-subtree` | TODO headings in subtree |
+| `emacs-todoist-org-apply-remote` | Update heading from Todoist task alist |
+| `emacs-todoist-org--replace-body` | Replace body text (preserves drawers/children) |
+| `emacs-todoist-org-resolve-project` | Heading prop → file keyword → global default |
+| `emacs-todoist-org-heading-to-alist` | Bundle heading into alist for sync |
+
+**`emacs-todoist-api.el`** — Sync API v1 commands and HTTP:
+
+| Function | Purpose |
+|----------|---------|
+| `emacs-todoist-api-token` | Get API token (handles string or function) |
+| `emacs-todoist-api-generate-uuid` | UUID v4 for command IDs |
+| `emacs-todoist-api-build-command` | Build generic Sync API command alist |
+| `emacs-todoist-api-item-add` | Build `item_add` (keywords: `:description`, `:project-id`, `:parent-id`, `:due-date`, `:temp-id`) |
+| `emacs-todoist-api-item-update` | Build `item_update` (keywords: `:content`, `:description`, `:due-date`, `:project-id`) |
+| `emacs-todoist-api-item-complete` | Build `item_complete` commands (one per ID) |
+| `emacs-todoist-api-item-uncomplete` | Build `item_uncomplete` commands |
+| `emacs-todoist-api-item-delete` | Build `item_delete` commands |
+| `emacs-todoist-api-parse-response` | Extract sync_token, sync_status, temp_id_mapping, items, projects |
+| `emacs-todoist-api-hash-item` | SHA-1 of (content, description, due, checked) for TODOIST_REMOTE_HASH |
+| `emacs-todoist-api-sync` | Core async Sync API call via `url-retrieve` |
+| `emacs-todoist-api-fetch-items` | Convenience: read-only items fetch |
+| `emacs-todoist-api-fetch-projects` | Convenience: full-sync projects fetch |
+
+**`emacs-todoist.el`** — interactive commands (entry points):
+
+| Command | Purpose |
+|---------|---------|
+| `emacs-todoist-sync-heading` | Main sync for heading at point (detect + push/pull/conflict) |
+| `emacs-todoist-push-heading` | Force push heading (ignore remote state) |
+| `emacs-todoist-pull-heading` | Force pull heading (ignore local changes) |
+| `emacs-todoist-sync-buffer` | Sync all linked headings in buffer; with `C-u` also push new TODOs |
+| `emacs-todoist-sync-subtree` | Sync all linked headings in subtree; with `C-u` also push new TODOs |
+| `emacs-todoist-sync-region` | Sync all linked headings in region; with `C-u` also push new TODOs |
+
+**`emacs-todoist.el`** — key internal functions:
+
+| Function | Purpose |
+|----------|---------|
+| `emacs-todoist-log` | Timestamped logging to `*emacs-todoist-log*` |
+| `emacs-todoist--ensure-projects` | Populate project name→ID cache (async, callback-based) |
+| `emacs-todoist--resolve-project-id` | Look up name in cache (case-insensitive); pass-through for numeric IDs |
+| `emacs-todoist--check-sync-status` | Check per-command sync_status for errors |
+| `emacs-todoist--state-to-checked` / `--checked-to-state` | TODO↔checked conversion |
+| `emacs-todoist--heading-as-remote-item` | Build fake Todoist item from heading (for hash computation) |
+| `emacs-todoist--build-push-commands` | item_update + complete/uncomplete for existing task |
+| `emacs-todoist--build-new-heading-commands` | item_add for heading + children; returns (COMMANDS . ENTRIES) |
+| `emacs-todoist--push-new-heading` | Push new heading (ensures projects, async) |
+| `emacs-todoist--push-update` | Push update for existing task |
+| `emacs-todoist--apply-pull` | Apply remote item to heading + update hashes |
+| `emacs-todoist--sync-children` | Pull cascaded changes to child headings |
+| `emacs-todoist--handle-deletion` | Prompt: delete local / re-push / unlink |
+| `emacs-todoist--sync-entries` | Bulk sync entry point (linked + new markers) |
+| `emacs-todoist--sync-entries-1` | Continuation after project cache |
+| `emacs-todoist--sync-entries-classify` | Classify linked headings: pull/push/skip/conflict/deleted |
+| `emacs-todoist--sync-entries-push` | Send batch push + new commands |
+| `emacs-todoist--sync-entries-writeback` | Write IDs/hashes/token after bulk push |
+
+### Configuration (`defcustom` in `emacs-todoist.el`)
+
+| Variable | Type | Purpose |
+|----------|------|---------|
+| `emacs-todoist-api-token` | string or function | Todoist API token |
+| `emacs-todoist-default-project` | string or nil | Default project name or numeric ID |
+| `emacs-todoist-todo-state-mapping` | alist | TODO states → checked values (default: TODO=nil, DONE=1) |
+| `emacs-todoist-log-level` | symbol | Minimum log level: `debug`, `info`, `error` |
+| `emacs-todoist-log-buffer-name` | string | Log buffer name (default: `"*emacs-todoist-log*"`) |
 
 ## Sync state model
 
 All state lives in org heading properties — no external caches:
 
-| Property              | Purpose                                      |
-|-----------------------|----------------------------------------------|
-| `TODOIST_ID`          | Real Todoist task ID                         |
-| `TODOIST_PROJECT`     | Project ID override                          |
-| `TODOIST_LOCAL_HASH`  | SHA-1 of (title, deadline, desc, state)      |
+| Property | Purpose |
+|----------|---------|
+| `TODOIST_ID` | Real Todoist task ID |
+| `TODOIST_PROJECT` | Project ID override |
+| `TODOIST_LOCAL_HASH` | SHA-1 of (title, deadline, desc, state) |
 | `TODOIST_REMOTE_HASH` | SHA-1 of Todoist item's sync-relevant fields |
-| `TODOIST_SYNC_TOKEN`  | Sync token from last successful sync         |
+| `TODOIST_SYNC_TOKEN` | Sync token from last successful sync |
 
 **Change detection** (two-hash scheme):
 ```
@@ -54,29 +143,78 @@ Both hashes update together after each successful sync.
 - Full sync (`"*"`): missing item = deleted remotely → prompt user:
   delete local, re-push, or unlink
 
+### Bulk sync flow (internal)
+
+The bulk sync commands (`sync-buffer`, `sync-subtree`, `sync-region`)
+share a common internal pipeline:
+
+```
+emacs-todoist--sync-entries(linked-markers, new-markers)
+  │
+  ├─ if new-markers → emacs-todoist--ensure-projects (async)
+  │
+  └─ emacs-todoist--sync-entries-1
+       │
+       ├─ Determine batch token (all same → incremental, mixed → "*")
+       ├─ emacs-todoist-api-sync (fetch items)
+       │
+       └─ emacs-todoist--sync-entries-classify
+            │
+            ├─ For each linked heading: classify as pull/push/skip/conflict/deleted
+            ├─ Apply pulls immediately
+            ├─ Collect push commands
+            │
+            └─ emacs-todoist--sync-entries-push
+                 │
+                 ├─ Filter child markers (avoid duplicate item_add)
+                 ├─ Build item_add commands for new headings
+                 ├─ emacs-todoist-api-sync (send all commands)
+                 │
+                 └─ emacs-todoist--sync-entries-writeback
+                      └─ Write hashes, IDs, sync token to all affected headings
+```
+
 ## Testing
 
 ```sh
-make test              # All mock tests
-make test-org          # Only org module tests
-make test-api          # Only API tests (no HTTP, no rate limits)
-make test-integration  # Only integration tests
-make test-live         # live API tests (requires valid token, see below)
+make test              # All mock tests (120 tests)
+make test-org          # Only org module tests (45 tests)
+make test-api          # Only API tests (36 tests, mocked HTTP)
+make test-integration  # Only integration tests (39 tests)
+make test-live         # Live API tests (9 tests, requires token)
 
 # Filter by file and pattern:
 make test FILE=test-org MATCH=description
 ```
 
-All API tests mock `url-retrieve` via `cl-letf` — no real network
-calls. Integration tests mock `emacs-todoist-api-sync` similarly.
+### Test architecture
 
-Test helpers: `with-org-buffer` (temp org buffer with point at first
-heading), `with-mock-sync` (mocks `emacs-todoist-api-sync` and
-captures calls in `emacs-todoist-test--sync-calls`).
+- **`tests/test-org.el`** (45 tests) — Unit tests for all
+  `emacs-todoist-org-*` functions. Uses `with-org-buffer` helper.
+- **`tests/test-api.el`** (36 tests) — Unit tests for API command
+  builders, parsing, and hashing. Mocks `url-retrieve` via `cl-letf`.
+- **`tests/test-integration.el`** (39 tests) — End-to-end sync
+  logic. Mocks `emacs-todoist-api-sync` via `with-mock-sync`. Tests
+  cover single heading sync, force push/pull, bulk sync, project
+  resolution, deletion handling, parent/child cascading, logging.
+- **`tests/test-live.el`** (9 tests) — Real API calls, excluded
+  from `make test`. See below.
+
+### Test helpers
+
+| Helper | File | Purpose |
+|--------|------|---------|
+| `with-org-buffer` | test-org.el, test-integration.el | Temp org buffer with TEXT, point at first heading |
+| `with-mock-sync` | test-integration.el | Mock `emacs-todoist-api-sync`, captures calls in `emacs-todoist-test--sync-calls` |
+| `emacs-todoist-test--sync-response` | test-integration.el | Variable: response to return from mock sync |
+| `with-live-sync` | test-live.el | Sets up token, installs sync shim, ensures cleanup |
+| `emacs-todoist-test-live--sync-blocking` | test-live.el | Synchronous Sync API call via `url-retrieve-synchronously` |
+| `emacs-todoist-test-live--fetch-task` | test-live.el | Full-sync fetch of a single task by ID |
+| `emacs-todoist-test-live--update-task` | test-live.el | Modify a task server-side (for pull testing) |
 
 ### Live API tests
 
-`tests/test-live.el` contains 8 tests that hit the real Todoist Sync
+`tests/test-live.el` contains 9 tests that hit the real Todoist Sync
 API v1.  They are **excluded** from the default `make test` target
 (via `run-tests.el`) and must be run explicitly with `make test-live`.
 
@@ -93,16 +231,6 @@ the project root (this file is gitignored).
   remote state.
 - All created tasks are deleted in an `unwind-protect` cleanup, even
   if a test fails midway.
-
-**Key helpers** (in `test-live.el`):
-- `with-live-sync` — sets up the token, installs the sync shim,
-  ensures cleanup
-- `emacs-todoist-test-live--sync-blocking` — synchronous Sync API
-  call using `url-retrieve-synchronously`
-- `emacs-todoist-test-live--fetch-task` — full-sync fetch of a single
-  task by ID
-- `emacs-todoist-test-live--update-task` — modify a task server-side
-  (for testing pull scenarios)
 
 ## Conventions
 
@@ -121,30 +249,35 @@ the project root (this file is gitignored).
 - **Async callbacks**: All code after `emacs-todoist-api-sync` runs
   in a callback. Use `point-marker` before the async call to safely
   navigate back to the heading.
+- **ID type coercion**: Todoist returns numeric IDs, but org
+  properties store them as strings. All ID comparisons use
+  `(format "%s" ...)` on both sides to coerce to strings.
+- **`checked` normalization**: The API returns `checked` as `t`,
+  `:json-false`, 0, 1, or nil depending on context. All code that
+  inspects `checked` must handle all forms — see
+  `emacs-todoist-api-hash-item` and `emacs-todoist-org-apply-remote`
+  for the canonical pattern.
+- **Project resolution**: Three-level cascade: heading property
+  `TODOIST_PROJECT` → file keyword `#+TODOIST_PROJECT:` → global
+  `emacs-todoist-default-project`. Names are resolved to numeric IDs
+  via a session-level cache populated lazily from the API.
+- **Child deduplication in bulk sync**: When pushing new headings in
+  bulk, children whose parent is also being pushed are filtered out,
+  since `emacs-todoist--build-new-heading-commands` already includes
+  item_add commands for direct children.
 
 ## Implementation phases
 
 - [x] Phase 0: Dev tooling (Makefile, test runner)
-- [x] Phase 1: Org module
-- [x] Phase 2: API module
-- [x] Phase 3: Integration layer — sync logic, logging, 36 tests
-- [ ] Phase 4: Bulk sync + frontend (bulk sync commands done, frontend TODO)
+- [x] Phase 1: Org module (13 public functions, 45 tests)
+- [x] Phase 2: API module (14 public functions, 36 tests)
+- [x] Phase 3: Integration layer — sync logic, logging, 39 tests
+- [x] Phase 4a: Bulk sync commands (`sync-buffer`, `sync-subtree`,
+  `sync-region`) — done, 14 bulk-specific integration tests
+- [ ] Phase 4b: `emacs-todoist-open` frontend buffer
 - [ ] Phase 5: Polish (README.org, autoloads, package headers)
 
-## Phase 4: Bulk sync + frontend (next up)
-
-### `emacs-todoist-sync-buffer` command
-
-Sync all `TODOIST`-linked headings in the current buffer:
-1. Collect all headings via `emacs-todoist-org-synced-entries`
-2. Determine sync token strategy:
-   - All `TODOIST_SYNC_TOKEN` identical → use it (incremental)
-   - Tokens differ → use `"*"` (full sync)
-3. Fetch remote items in one API call
-4. For each heading: compare hashes, push/pull/skip as needed
-5. Write new sync token back to all synced headings
-
-### `emacs-todoist-open` frontend buffer
+## Phase 4b: `emacs-todoist-open` frontend buffer (next up)
 
 1. Call `emacs-todoist-api-fetch-items` with `"*"` to get all tasks
 2. Create ephemeral `*Todoist*` buffer in `org-mode`
@@ -158,19 +291,17 @@ Sync all `TODOIST`-linked headings in the current buffer:
 5. Mark buffer as not visiting a file (ephemeral)
 6. All `emacs-todoist-sync-*` commands work in this buffer
 
-### Tests needed for Phase 4
-
-- `sync-buffer`: all same token → incremental; mixed → full sync
-- `sync-buffer`: handles mix of changed/unchanged headings
-- Deletion: full sync missing task → prompts user with 3 options
+### Tests needed
 - Frontend: renders tasks correctly, groups by project
+- Frontend: sync commands work in the ephemeral buffer
 
 ## Phase 5: Polish
 
 - Add `;;;###autoload` cookies to interactive commands
-- Package headers (Version, Package-Requires, URL, Keywords)
+- Package headers — partially done (Version, Package-Requires, URL
+  present in `emacs-todoist.el`; missing from sub-modules)
 - `README.org` with usage instructions
-- `SESSION.md` for discovered issues
+- Address items in `SESSION.md`
 
 ## Known future work (not MVP)
 
@@ -178,3 +309,7 @@ Sync all `TODOIST`-linked headings in the current buffer:
 - ediff for conflict resolution (currently prompts local vs remote)
 - Todoist labels/priorities mapping
 - Recurring task support
+- `sync-dwim` command: region if active → subtree → buffer
+- Non-interactive mode for `--handle-deletion` (currently uses
+  `read-char-choice` which blocks in batch mode)
+- Error messages surfaced to user via `message` (not just logged)

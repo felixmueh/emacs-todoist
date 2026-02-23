@@ -18,6 +18,35 @@
 ;; The core algorithm compares local and remote hashes to detect which side
 ;; changed, then pushes or pulls accordingly.  When both sides changed,
 ;; the user is prompted to choose.
+;;
+;; Interactive commands:
+;;   `emacs-todoist-sync-heading'  — Smart sync: detect + push/pull/conflict
+;;   `emacs-todoist-push-heading'  — Force push (ignore remote)
+;;   `emacs-todoist-pull-heading'  — Force pull (ignore local)
+;;   `emacs-todoist-sync-buffer'   — Bulk sync all linked headings (C-u: +new)
+;;   `emacs-todoist-sync-subtree'  — Bulk sync subtree (C-u: +new)
+;;   `emacs-todoist-sync-region'   — Bulk sync region (C-u: +new)
+;;
+;; All sync state is stored in org heading properties (TODOIST_ID,
+;; TODOIST_LOCAL_HASH, TODOIST_REMOTE_HASH, TODOIST_SYNC_TOKEN).
+;; No external state files or databases.
+;;
+;; Code organization (in order of appearance):
+;;   1. Configuration (defcustom)
+;;   2. Logging
+;;   3. Project cache (name → ID resolution)
+;;   4. Sync status validation
+;;   5. TODO state ↔ checked conversion
+;;   6. Building fake remote items (for hash computation)
+;;   7. Command builders (push commands, new heading commands)
+;;   8. Push new heading (single heading, async)
+;;   9. Push update (existing task, async)
+;;  10. Pull remote changes
+;;  11. Handle remote deletion
+;;  12. Core sync logic (single heading)
+;;  13. Force push / force pull
+;;  14. Bulk sync core (classify → push → writeback pipeline)
+;;  15. User-facing bulk sync commands
 
 ;;; Code:
 
