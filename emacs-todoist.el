@@ -441,6 +441,10 @@ allowing us to compute a remote hash for data we're about to push."
   (when-let* ((project-id (alist-get 'project_id item)))
     (format "%s" project-id)))
 
+(defun emacs-todoist--item-completed-p (item)
+  "Return non-nil when ITEM is completed (`checked')."
+  (equal "DONE" (emacs-todoist--checked-to-state (alist-get 'checked item))))
+
 (defun emacs-todoist--build-id-map-from-markers (markers)
   "Build hash table mapping TODOIST_ID strings to MARKERS."
   (let ((id-map (make-hash-table :test #'equal)))
@@ -553,18 +557,19 @@ parent exists in ID-MAP.  Returns the number of inserted headings."
                 (emacs-todoist--upsert-item-at-point item sync-token))))
            ;; Missing heading: insert as child when parent exists.
            (t
-            (when-let* ((parent-id (emacs-todoist--item-parent-id item))
-                        (parent-marker (gethash parent-id id-map))
-                        (_ (and (markerp parent-marker)
-                                (marker-buffer parent-marker))))
-              (let ((new-marker (emacs-todoist--insert-child-heading
-                                 parent-marker)))
-                (with-current-buffer (marker-buffer new-marker)
-                  (save-excursion
-                    (goto-char new-marker)
-                    (emacs-todoist--upsert-item-at-point item sync-token)))
-                (puthash item-id new-marker id-map)
-                (cl-incf inserted))))))))))
+            (unless (emacs-todoist--item-completed-p item)
+              (when-let* ((parent-id (emacs-todoist--item-parent-id item))
+                          (parent-marker (gethash parent-id id-map))
+                          (_ (and (markerp parent-marker)
+                                  (marker-buffer parent-marker))))
+                (let ((new-marker (emacs-todoist--insert-child-heading
+                                   parent-marker)))
+                  (with-current-buffer (marker-buffer new-marker)
+                    (save-excursion
+                      (goto-char new-marker)
+                      (emacs-todoist--upsert-item-at-point item sync-token)))
+                  (puthash item-id new-marker id-map)
+                  (cl-incf inserted)))))))))))
 
 (defun emacs-todoist--apply-top-level-items (items sync-token id-map project-fn)
   "Insert top-level (or orphan) ITEMS using PROJECT-FN for placement.
@@ -576,7 +581,8 @@ the parent project container subtree.  Returns inserted heading count."
         (let ((existing (gethash item-id id-map)))
           (unless (and (markerp existing) (marker-buffer existing))
           (let ((parent-id (emacs-todoist--item-parent-id item)))
-            (when (or (null parent-id) (not (gethash parent-id id-map)))
+            (when (and (not (emacs-todoist--item-completed-p item))
+                       (or (null parent-id) (not (gethash parent-id id-map))))
               (let* ((anchor (funcall project-fn item))
                      (project-marker
                       (cond

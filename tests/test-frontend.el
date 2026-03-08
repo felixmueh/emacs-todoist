@@ -91,6 +91,23 @@
       (beginning-of-line)
       (should (equal "c1" (org-entry-get (point) "TODOIST_ID"))))))
 
+(ert-deftest emacs-todoist-frontend/apply-items-skips-completed-child ()
+  "apply-items does not insert a missing child that is already completed."
+  (emacs-todoist-test-with-org-buffer
+      "* TODO Parent\n:PROPERTIES:\n:TODOIST_ID: p1\n:END:\n"
+    (let* ((before (buffer-string))
+           (id-map (emacs-todoist--build-id-map))
+           (child '((id . "c-done")
+                    (parent_id . "p1")
+                    (content . "Done child")
+                    (description . "")
+                    (project_id . "proj-1")
+                    (due . nil)
+                    (checked . 1))))
+      (should (= 0 (emacs-todoist--apply-items (list child) "tok-x" id-map)))
+      (should (equal before (buffer-string)))
+      (should-not (gethash "c-done" id-map)))))
+
 (ert-deftest emacs-todoist-frontend/apply-items-skips-top-level ()
   "apply-items skips top-level items when no parent is available."
   (emacs-todoist-test-with-org-buffer "* TODO Existing\n"
@@ -133,11 +150,32 @@
       (should (= 1
                  (emacs-todoist--apply-top-level-items
                   (list item) "tok" id-map
-                  (lambda (_)
+                 (lambda (_)
                     (setq called t)
                     (goto-char (point-min))
                     (point-marker)))))
       (should called))))
+
+(ert-deftest emacs-todoist-frontend/apply-top-level-skips-completed-item ()
+  "apply-top-level-items does not insert completed top-level tasks."
+  (emacs-todoist-test-with-org-buffer "* Inbox\n"
+    (let ((called nil)
+          (id-map (make-hash-table :test #'equal))
+          (item '((id . "done-top")
+                  (content . "Already Done")
+                  (description . "")
+                  (project_id . "proj-1")
+                  (due . nil)
+                  (checked . 1))))
+      (should (= 0
+                 (emacs-todoist--apply-top-level-items
+                  (list item) "tok" id-map
+                  (lambda (_)
+                    (setq called t)
+                    (point-marker)))))
+      (should-not called)
+      (should-not (gethash "done-top" id-map))
+      (should-not (string-match-p "Already Done" (buffer-string))))))
 
 (ert-deftest emacs-todoist-frontend/apply-top-level-preserves-project-markers ()
   "Interleaved top-level inserts stay under the correct project container."
@@ -381,8 +419,7 @@
         (should (equal "top-1" (org-entry-get (point) "TODOIST_ID")))
         (should (org-entry-get (point) "TODOIST_LOCAL_HASH"))
         (should (org-entry-get (point) "TODOIST_REMOTE_HASH"))
-
-        (should (re-search-forward "^\\*\\*\\* DONE Nested DONE$" nil t))))))
+        (should-not (re-search-forward "^\\*\\*\\* DONE Nested DONE$" nil t))))))
 
 (ert-deftest emacs-todoist-frontend/unknown-project-renders ()
   "Unknown project IDs render under an 'Unknown Project' container."
@@ -435,6 +472,36 @@
           (goto-char (point-min))
           (should (re-search-forward "^\\*\\* TODO Remote New$" nil t))))
       (should (>= call-count 2)))))
+
+(ert-deftest emacs-todoist-frontend/frontend-sync-skips-new-completed-item ()
+  "Frontend sync does not reinsert new remote items that are already DONE."
+  (emacs-todoist-test-with-clean-frontend
+    (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+               (lambda (_sync-token resource-types commands callback)
+                 (if (equal resource-types '("items" "projects"))
+                     (funcall callback (emacs-todoist-test--frontend-open-response))
+                   (if (null commands)
+                       (funcall callback
+                                '((sync_token . "tok-sync")
+                                  (items . (((id . "top-1")
+                                             (content . "Top TODO")
+                                             (description . "Top body")
+                                             (project_id . "proj-1")
+                                             (due . ((date . "2026-05-01")))
+                                             (checked . 0))
+                                            ((id . "top-done")
+                                             (content . "Completed remotely")
+                                             (description . "")
+                                             (project_id . "proj-1")
+                                             (due . nil)
+                                             (checked . 1))))))
+                     (funcall callback '((sync_token . "tok-sync-2") (items . nil))))))))
+      (emacs-todoist-open)
+      (with-current-buffer emacs-todoist-frontend-buffer-name
+        (emacs-todoist-frontend-sync)
+        (goto-char (point-min))
+        (should-not (re-search-forward "^\\*\\* DONE Completed remotely$" nil t))
+        (should-not (re-search-forward "^\\*\\* TODO Completed remotely$" nil t))))))
 
 (ert-deftest emacs-todoist-frontend/frontend-sync-hook-runs-in-frontend-buffer ()
   "Frontend post-classify hook runs in frontend buffer for async callbacks."
