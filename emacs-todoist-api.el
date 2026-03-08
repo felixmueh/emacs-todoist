@@ -32,6 +32,7 @@
 (require 'json)
 (require 'url)
 (require 'cl-lib)
+(require 'subr-x)
 
 ;; The real `defcustom' lives in emacs-todoist.el; we declare it here so
 ;; this module compiles without warnings and can be used standalone.
@@ -180,12 +181,20 @@ Missing keys in RESPONSE are returned as nil."
 ;; Item hashing
 ;; ==============================================================================
 
+(defun emacs-todoist-api--normalize-hash-string (value)
+  "Return VALUE trimmed for stable hash comparisons."
+  (if (stringp value)
+      (string-trim (substring-no-properties value))
+    value))
+
 (defun emacs-todoist-api-hash-item (item)
   "Compute SHA-1 of sync-relevant fields of a Todoist ITEM alist.
 Hashes `content', `description', `due', and `checked' to produce the
 TODOIST_REMOTE_HASH stored alongside org headings."
-  (let* ((content     (alist-get 'content item))
-         (description (alist-get 'description item))
+  (let* ((content     (emacs-todoist-api--normalize-hash-string
+                       (alist-get 'content item)))
+         (description (emacs-todoist-api--normalize-hash-string
+                       (alist-get 'description item)))
          (due         (alist-get 'due item))
          (raw-checked (alist-get 'checked item))
          ;; Normalize checked: the API may return `:json-false' for

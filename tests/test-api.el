@@ -266,6 +266,32 @@ This prevents accidentally clearing fields on Todoist's side."
     (should-not (equal (emacs-todoist-api-hash-item item-a)
                        (emacs-todoist-api-hash-item item-b)))))
 
+(ert-deftest emacs-todoist-api-hash-item/description-trims-surrounding-whitespace ()
+  "Leading/trailing whitespace in `description' is ignored for hashing."
+  (let ((item-a '((content . "Task") (description . "Body text") (due) (checked . 0)))
+        (item-b '((content . "Task") (description . "\n  Body text \n") (due) (checked . 0))))
+    (should (equal (emacs-todoist-api-hash-item item-a)
+                   (emacs-todoist-api-hash-item item-b)))))
+
+(ert-deftest emacs-todoist-api-hash-item/content-trims-surrounding-whitespace ()
+  "Leading/trailing whitespace in `content' is ignored for hashing."
+  (let ((item-a '((content . "Task") (description . "") (due) (checked . 0)))
+        (item-b '((content . "  Task  ") (description . "") (due) (checked . 0))))
+    (should (equal (emacs-todoist-api-hash-item item-a)
+                   (emacs-todoist-api-hash-item item-b)))))
+
+(ert-deftest emacs-todoist-api-hash-item/ignores-text-properties ()
+  "Text properties on content/description are ignored for hashing."
+  (let* ((content (copy-sequence "Task"))
+         (description (copy-sequence "Body"))
+         (plain '((content . "Task") (description . "Body") (due) (checked . 0)))
+         (prop nil))
+    (add-text-properties 0 (length content) '(face bold) content)
+    (add-text-properties 0 (length description) '(face italic) description)
+    (setq prop `((content . ,content) (description . ,description) (due) (checked . 0)))
+    (should (equal (emacs-todoist-api-hash-item plain)
+                   (emacs-todoist-api-hash-item prop)))))
+
 (ert-deftest emacs-todoist-api-hash-item/due-changes-hash ()
   "Changing `due' must produce a different hash."
   (let ((item-a '((content . "Task") (description . "") (due (date . "2026-01-01")) (checked . 0)))

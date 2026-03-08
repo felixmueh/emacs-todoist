@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'org)
+(require 'org-agenda)
 (require 'cl-lib)
 (require 'emacs-todoist)
 
@@ -27,6 +28,9 @@
 
 (defvar-local emacs-todoist--frontend-id-to-name nil
   "Hash table: project-id string to display name in frontend buffer.")
+
+(defvar emacs-todoist--frontend-agenda-snapshot-file nil
+  "Temp Org file used as agenda source for frontend agenda views.")
 
 (defun emacs-todoist--frontend-setup-buffer (&optional preserve-maps)
   "Initialize current buffer as a Todoist frontend buffer.
@@ -202,6 +206,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 (defvar emacs-todoist-frontend-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") #'emacs-todoist-frontend-sync)
+    (define-key map (kbd "A") #'emacs-todoist-frontend-agenda)
     map)
   "Keymap for `emacs-todoist-frontend-mode'.")
 
@@ -259,8 +264,10 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                  (message "emacs-todoist: rendered %d tasks" (length items)))))))))))
 
 ;;;###autoload
-(defun emacs-todoist-frontend-sync ()
-  "Incrementally sync the current frontend buffer from Todoist."
+(defun emacs-todoist-frontend-sync (&optional done-fn)
+  "Incrementally sync the current frontend buffer from Todoist.
+When DONE-FN is non-nil, call it with a sync summary plist after
+successful sync completion."
   (interactive)
   (unless emacs-todoist-frontend-mode
     (user-error "Not in an emacs-todoist frontend buffer"))
@@ -272,7 +279,37 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
   (let ((linked-markers (emacs-todoist-org-synced-entries)))
     (emacs-todoist--sync-entries
      linked-markers nil
-     :post-classify-fn #'emacs-todoist--frontend-sync-post-classify)))
+     :post-classify-fn #'emacs-todoist--frontend-sync-post-classify
+     :done-fn done-fn)))
+
+(defun emacs-todoist--frontend-agenda-snapshot-path ()
+  "Return the temp file path used for frontend agenda snapshots."
+  (unless (and (stringp emacs-todoist--frontend-agenda-snapshot-file)
+               (file-exists-p emacs-todoist--frontend-agenda-snapshot-file))
+    (setq emacs-todoist--frontend-agenda-snapshot-file
+          (make-temp-file "emacs-todoist-frontend-agenda-" nil ".org")))
+  emacs-todoist--frontend-agenda-snapshot-file)
+
+(defun emacs-todoist--frontend-open-agenda-from-buffer ()
+  "Open Org date agenda view sourced only from the current frontend buffer."
+  (let ((agenda-file (emacs-todoist--frontend-agenda-snapshot-path)))
+    (let ((coding-system-for-write 'utf-8-unix))
+      (write-region (point-min) (point-max) agenda-file nil 'silent))
+    (let ((org-agenda-files (list agenda-file)))
+      (org-agenda-list))))
+
+;;;###autoload
+(defun emacs-todoist-frontend-agenda ()
+  "Sync the frontend buffer, then open a date agenda for frontend items."
+  (interactive)
+  (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer)))
+    (switch-to-buffer todoist-buf)
+    (with-current-buffer todoist-buf
+      (emacs-todoist-frontend-sync
+       (lambda (_summary)
+         (when (buffer-live-p todoist-buf)
+           (with-current-buffer todoist-buf
+             (emacs-todoist--frontend-open-agenda-from-buffer))))))))
 
 (provide 'emacs-todoist-frontend)
 ;;; emacs-todoist-frontend.el ends here

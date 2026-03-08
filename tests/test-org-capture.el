@@ -66,6 +66,30 @@
         (emacs-todoist-org-capture-after-finalize))
       (should push-called))))
 
+(ert-deftest emacs-todoist-org-capture/after-finalize-defers-push-in-interactive ()
+  "Interactive finalize defers push until command-loop continuation."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* TODO Task\n")
+    (goto-char (point-min))
+    (let ((emacs-todoist-org-capture--marker (point-marker))
+          (emacs-todoist-org-capture-route-to-frontend nil)
+          (org-note-abort nil)
+          (noninteractive nil)
+          (deferred-thunk nil)
+          (push-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist--capture-defer)
+                 (lambda (thunk)
+                   (setq deferred-thunk thunk)))
+                ((symbol-function 'emacs-todoist-push-heading)
+                 (lambda ()
+                   (setq push-called t))))
+        (emacs-todoist-org-capture-after-finalize)
+        (should deferred-thunk)
+        (should-not push-called)
+        (funcall deferred-thunk)
+        (should push-called)))))
+
 (ert-deftest emacs-todoist-org-capture/no-global-after-finalize-hook ()
   "Core package should not globally hook capture finalize behavior."
   (should-not (memq #'emacs-todoist--capture-after-finalize

@@ -27,6 +27,7 @@
 (require 'org)
 (require 'org-element)
 (require 'sha1)
+(require 'subr-x)
 
 ;; The real `defcustom' lives in emacs-todoist.el; we declare it here so
 ;; this module can reference it without pulling in the full package and
@@ -118,14 +119,27 @@ Each element is (KEY . VALUE) where KEY is like \"TODOIST_ID\"."
 ;; Change detection via hashing
 ;; ==============================================================================
 
+(defun emacs-todoist-org--normalize-hash-string (value)
+  "Return VALUE trimmed for stable hash comparisons."
+  (cond
+   ((null value) "")
+   ((stringp value)
+    (string-trim (substring-no-properties value)))
+   (t
+    (string-trim (format "%s" value)))))
+
 (defun emacs-todoist-org-heading-local-hash ()
   "Compute a SHA-1 hash of the heading's sync-relevant fields.
 The hash covers title, deadline, description, and TODO state so we can
 detect local edits that need to be pushed to Todoist."
-  (let ((title    (or (emacs-todoist-org-heading-title) ""))
-        (deadline (or (emacs-todoist-org-heading-deadline) ""))
-        (desc     (or (emacs-todoist-org-heading-description) ""))
-        (state    (or (emacs-todoist-org-heading-todo-state) "")))
+  (let ((title    (emacs-todoist-org--normalize-hash-string
+                   (emacs-todoist-org-heading-title)))
+        (deadline (emacs-todoist-org--normalize-hash-string
+                   (emacs-todoist-org-heading-deadline)))
+        (desc     (emacs-todoist-org--normalize-hash-string
+                   (emacs-todoist-org-heading-description)))
+        (state    (emacs-todoist-org--normalize-hash-string
+                   (emacs-todoist-org-heading-todo-state))))
     (sha1 (format "%S" (list title deadline desc state)))))
 
 (defun emacs-todoist-org-heading-local-changed-p ()

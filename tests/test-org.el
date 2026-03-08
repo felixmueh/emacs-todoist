@@ -196,6 +196,46 @@ Point is placed at the first heading."
       (setq h2 (emacs-todoist-org-heading-local-hash)))
     (should-not (equal h1 h2))))
 
+(ert-deftest emacs-todoist-org-hash-trims-surrounding-description-whitespace ()
+  "Leading/trailing description whitespace is ignored for local hash."
+  (let (h1 h2)
+    (with-org-buffer "* TODO Task\nBody text\n"
+      (setq h1 (emacs-todoist-org-heading-local-hash)))
+    (with-org-buffer "* TODO Task\n\n  Body text  \n\n"
+      (setq h2 (emacs-todoist-org-heading-local-hash)))
+    (should (equal h1 h2))))
+
+(ert-deftest emacs-todoist-org-hash-ignores-text-properties ()
+  "Text properties on extracted heading fields do not affect local hash."
+  (let* ((plain-title "Task")
+         (plain-desc "Body")
+         (plain-state "TODO")
+         (prop-title (copy-sequence plain-title))
+         (prop-desc (copy-sequence plain-desc))
+         (prop-state (copy-sequence plain-state)))
+    (add-text-properties 0 (length prop-title) '(face org-level-2) prop-title)
+    (add-text-properties 0 (length prop-desc) '(fontified t) prop-desc)
+    (add-text-properties 0 (length prop-state) '(face org-todo) prop-state)
+    (cl-letf (((symbol-function 'emacs-todoist-org-heading-title)
+               (lambda () plain-title))
+              ((symbol-function 'emacs-todoist-org-heading-description)
+               (lambda () plain-desc))
+              ((symbol-function 'emacs-todoist-org-heading-deadline)
+               (lambda () nil))
+              ((symbol-function 'emacs-todoist-org-heading-todo-state)
+               (lambda () plain-state)))
+      (let ((plain-hash (emacs-todoist-org-heading-local-hash)))
+        (cl-letf (((symbol-function 'emacs-todoist-org-heading-title)
+                   (lambda () prop-title))
+                  ((symbol-function 'emacs-todoist-org-heading-description)
+                   (lambda () prop-desc))
+                  ((symbol-function 'emacs-todoist-org-heading-deadline)
+                   (lambda () nil))
+                  ((symbol-function 'emacs-todoist-org-heading-todo-state)
+                   (lambda () prop-state)))
+          (should (equal plain-hash
+                         (emacs-todoist-org-heading-local-hash))))))))
+
 (ert-deftest emacs-todoist-org-hash-changes-with-todo-state ()
   "Changing the TODO state produces a different hash."
   (let (h1 h2)

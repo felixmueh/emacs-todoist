@@ -277,6 +277,85 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
           (should (equal "updated-token"
                          (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))))
 
+(ert-deftest emacs-todoist-integration/neither-changed-ignores-description-edge-whitespace ()
+  "Remote description edge whitespace does not count as a change."
+  (with-org-buffer "* TODO Buy groceries\nBody text\n"
+    (let* ((local-hash (emacs-todoist-org-heading-local-hash))
+           (stored-remote-item
+            '((content . "Buy groceries")
+              (description . "Body text")
+              (due)
+              (checked . 0)))
+           (remote-hash (emacs-todoist-api-hash-item stored-remote-item))
+           (pull-called nil))
+      (emacs-todoist-org-set-props
+       `(("TODOIST_ID"          . "task-42")
+         ("TODOIST_LOCAL_HASH"  . ,local-hash)
+         ("TODOIST_REMOTE_HASH" . ,remote-hash)
+         ("TODOIST_SYNC_TOKEN"  . "old-token")))
+      (cl-letf (((symbol-function 'emacs-todoist--apply-pull)
+                 (lambda (&rest _args)
+                   (setq pull-called t)))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (push (list (cons 'commands commands))
+                         emacs-todoist-test--sync-calls)
+                   (funcall callback
+                            '((sync_token . "updated-token")
+                              (items . (((id . "task-42")
+                                         (content . "Buy groceries")
+                                         (description . "\n  Body text \n")
+                                         (due)
+                                         (checked . 0)))))))))
+        (setq emacs-todoist-test--sync-calls nil)
+        (emacs-todoist-sync-heading))
+      (should-not pull-called)
+      (should (= 1 (length emacs-todoist-test--sync-calls)))
+      (should (null (alist-get 'commands (car emacs-todoist-test--sync-calls))))
+      (should (equal "updated-token" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+(ert-deftest emacs-todoist-integration/neither-changed-ignores-local-text-properties ()
+  "Local text properties on title/state do not trigger false conflicts."
+  (with-org-buffer "* TODO Buy groceries\nSame as before.\n"
+    (let* ((local-hash (emacs-todoist-org-heading-local-hash))
+           (remote-item `((content . "Buy groceries")
+                          (description . "Same as before.")
+                          (due)
+                          (checked . 0)))
+           (remote-hash (emacs-todoist-api-hash-item remote-item))
+           (conflict-prompted nil)
+           (propertized-title (copy-sequence "Buy groceries"))
+           (propertized-state (copy-sequence "TODO")))
+      (add-text-properties 0 (length propertized-title) '(face org-level-2)
+                           propertized-title)
+      (add-text-properties 0 (length propertized-state) '(face org-todo)
+                           propertized-state)
+      (emacs-todoist-org-set-props
+       `(("TODOIST_ID"          . "task-42")
+         ("TODOIST_LOCAL_HASH"  . ,local-hash)
+         ("TODOIST_REMOTE_HASH" . ,remote-hash)
+         ("TODOIST_SYNC_TOKEN"  . "old-token")))
+      (cl-letf (((symbol-function 'emacs-todoist-org-heading-title)
+                 (lambda () propertized-title))
+                ((symbol-function 'emacs-todoist-org-heading-todo-state)
+                 (lambda () propertized-state))
+                ((symbol-function 'read-char-choice)
+                 (lambda (&rest _args)
+                   (setq conflict-prompted t)
+                   ?l))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            `((sync_token . "updated-token")
+                              (items . (((id . "task-42")
+                                         (content . "Buy groceries")
+                                         (description . "Same as before.")
+                                         (due)
+                                         (checked . 0)))))))))
+        (emacs-todoist-sync-heading))
+      (should-not conflict-prompted)
+      (should (equal "updated-token" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
 ;; ==============================================================================
 ;; Incremental sync — task not in response means unchanged
 ;; ==============================================================================
@@ -327,6 +406,43 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
         (should (cl-some (lambda (cmd)
                            (equal "item_update" (alist-get 'type cmd)))
                          commands))))))
+
+(ert-deftest emacs-todoist-integration/sync-heading-conflict-logs-both-versions ()
+  "Conflict logging includes local and remote versions for single sync."
+  (with-org-buffer "* TODO Local title\nLocal body\n"
+    (let ((captured-logs nil)
+          (pushed nil))
+      (emacs-todoist-org-set-props
+       '(("TODOIST_ID" . "task-42")
+         ("TODOIST_LOCAL_HASH" . "stale-local")
+         ("TODOIST_REMOTE_HASH" . "stale-remote")
+         ("TODOIST_SYNC_TOKEN" . "tok-0")))
+      (cl-letf (((symbol-function 'emacs-todoist-log)
+                 (lambda (_level fmt &rest args)
+                   (push (apply #'format fmt args) captured-logs)))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            '((sync_token . "tok-1")
+                              (items . (((id . "task-42")
+                                         (content . "Remote title")
+                                         (description . "\nRemote body\n")
+                                         (due . ((date . "2026-04-01")))
+                                         (checked . 1))))))))
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars) ?l))
+                ((symbol-function 'emacs-todoist--push-update)
+                 (lambda (&rest _args)
+                   (setq pushed t))))
+        (emacs-todoist-sync-heading))
+      (should pushed)
+      (let ((combined (mapconcat #'identity (nreverse captured-logs) "\n")))
+        (should (string-match-p "Conflict detected (single) for TODOIST_ID=task-42" combined))
+        (should (string-match-p "title: local=\"Local title\" remote=\"Remote title\"" combined))
+        (should (string-match-p "description: local=\"Local body\" remote=\"" combined))
+        (should (string-match-p "Remote body" combined))
+        (should (string-match-p "deadline: local=nil remote=\"2026-04-01\"" combined))
+        (should (string-match-p "state: local=\"TODO\" remote=\"DONE\"" combined))))))
 
 (ert-deftest emacs-todoist-integration/force-push-new ()
   "Force push on a heading with no TODOIST_ID pushes as new."
@@ -990,6 +1106,40 @@ defensive check that shouldn't happen in practice."
       (beginning-of-line)
       (should (null (org-entry-get (point) "TODOIST_ID"))))))
 
+(ert-deftest emacs-todoist-integration/sync-buffer-conflict-logs-both-versions ()
+  "Bulk conflict logging includes local and remote versions."
+  (with-org-buffer
+      (concat "* TODO Local title\n:PROPERTIES:\n:TODOIST_ID: task-42\n"
+              ":TODOIST_LOCAL_HASH: stale-local\n:TODOIST_REMOTE_HASH: stale-remote\n"
+              ":TODOIST_SYNC_TOKEN: tok-0\n:END:\nLocal body\n")
+    (let ((captured-logs nil))
+      (cl-letf (((symbol-function 'emacs-todoist-log)
+                 (lambda (_level fmt &rest args)
+                   (push (apply #'format fmt args) captured-logs)))
+                ((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (if commands
+                       (funcall callback '((sync_token . "tok-push") (items . nil)))
+                     (funcall callback
+                              '((sync_token . "tok-1")
+                                (items . (((id . "task-42")
+                                           (content . "Remote title")
+                                           (description . "\nRemote body\n")
+                                           (due . ((date . "2026-04-01")))
+                                           (checked . 1)))))))))
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars) ?l))
+                ((symbol-function 'emacs-todoist--build-push-commands)
+                 (lambda (_todoist-id) nil)))
+        (emacs-todoist-sync-buffer))
+      (let ((combined (mapconcat #'identity (nreverse captured-logs) "\n")))
+        (should (string-match-p "Conflict detected (bulk) for TODOIST_ID=task-42" combined))
+        (should (string-match-p "title: local=\"Local title\" remote=\"Remote title\"" combined))
+        (should (string-match-p "description: local=\"Local body\" remote=\"" combined))
+        (should (string-match-p "Remote body" combined))
+        (should (string-match-p "deadline: local=nil remote=\"2026-04-01\"" combined))
+        (should (string-match-p "state: local=\"TODO\" remote=\"DONE\"" combined))))))
+
 (ert-deftest emacs-todoist-integration/sync-buffer-new-heading-ids-written-back ()
   "New headings get their real IDs from temp_id_mapping after bulk push."
   (with-org-buffer
@@ -1268,6 +1418,24 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
       (goto-char (point-min))
       (should-not (re-search-forward "^\\*" nil t)))))
 
+(ert-deftest emacs-todoist-integration/capture-dispatch-defers-in-interactive ()
+  "Capture dispatch defers work until command-loop continuation."
+  (with-org-buffer "* TODO Captured\n"
+    (let ((noninteractive nil)
+          (processed-marker nil))
+      (setq emacs-todoist--capture-deferred-thunks nil)
+      (remove-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)
+      (unwind-protect
+          (cl-letf (((symbol-function 'emacs-todoist--capture-process-or-push)
+                     (lambda (marker)
+                       (setq processed-marker marker))))
+            (emacs-todoist--capture-dispatch-finalize (point-marker))
+            (should-not processed-marker)
+            (emacs-todoist--capture-flush-deferred)
+            (should (markerp processed-marker)))
+        (setq emacs-todoist--capture-deferred-thunks nil)
+        (remove-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)))))
+
 (ert-deftest emacs-todoist-integration/capture-without-open-frontend-stays-local ()
   "When frontend was never opened, capture should be pushed in-place."
   (with-org-buffer
@@ -1286,6 +1454,31 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
         (emacs-todoist--capture-after-finalize))
       (should push-called)
       (should-not insert-called)
+      (goto-char (point-min))
+      (should (re-search-forward "^\\* TODO Captured$" nil t)))))
+
+(ert-deftest emacs-todoist-integration/capture-relocation-failure-keeps-local ()
+  "Failed frontend insertion keeps the local heading and falls back to push."
+  (with-org-buffer
+      "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
+    (let ((org-capture-last-stored-marker (point-marker))
+          (emacs-todoist-capture-to-frontend t)
+          (insert-called nil)
+          (push-called nil)
+          (opened-frontend (generate-new-buffer emacs-todoist-frontend-buffer-name)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
+                     (lambda (&rest _args)
+                       (setq insert-called t)
+                       nil))
+                    ((symbol-function 'emacs-todoist-push-heading)
+                     (lambda ()
+                       (setq push-called t))))
+            (emacs-todoist--capture-after-finalize))
+        (when (buffer-live-p opened-frontend)
+          (kill-buffer opened-frontend)))
+      (should insert-called)
+      (should push-called)
       (goto-char (point-min))
       (should (re-search-forward "^\\* TODO Captured$" nil t)))))
 

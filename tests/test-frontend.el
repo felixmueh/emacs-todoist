@@ -608,11 +608,49 @@
           (deactivate-mark)))
       (should (>= calls 3)))))
 
+(ert-deftest emacs-todoist-frontend/agenda-command-syncs-then-opens-restricted-view ()
+  "Frontend agenda command syncs first, then opens agenda from frontend snapshot."
+  (emacs-todoist-test-with-clean-frontend
+    (let (seen-agenda-files)
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token resource-types commands callback)
+                   (if (and (equal resource-types '("items"))
+                            (null commands))
+                       (funcall callback
+                                '((sync_token . "tok-agenda")
+                                  (items . (((id . "a1")
+                                             (content . "Agenda Item")
+                                             (description . "")
+                                             (project_id . "proj-1")
+                                             (due . nil)
+                                             (checked . 0))))))
+                      (funcall callback
+                               '((sync_token . "tok-agenda-push")
+                                 (items . nil))))))
+                ((symbol-function 'org-agenda-list)
+                 (lambda (&rest _args)
+                   (setq seen-agenda-files org-agenda-files))))
+        (emacs-todoist-frontend-agenda)
+        (should (= 1 (length seen-agenda-files)))
+        (let ((agenda-file (car seen-agenda-files)))
+          (should (stringp agenda-file))
+          (should (file-exists-p agenda-file))
+          (with-temp-buffer
+            (insert-file-contents agenda-file)
+            (goto-char (point-min))
+            (should (re-search-forward "^\\*\\* TODO Agenda Item$" nil t))))))))
+
 (ert-deftest emacs-todoist-frontend/autoload-open-command ()
   "Main package exposes frontend open command through autoload."
   (fmakunbound 'emacs-todoist-open)
   (autoload 'emacs-todoist-open "emacs-todoist-frontend" nil t)
   (should (autoloadp (symbol-function 'emacs-todoist-open))))
+
+(ert-deftest emacs-todoist-frontend/autoload-agenda-command ()
+  "Main package exposes frontend agenda command through autoload."
+  (fmakunbound 'emacs-todoist-frontend-agenda)
+  (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
+  (should (autoloadp (symbol-function 'emacs-todoist-frontend-agenda))))
 
 (ert-deftest emacs-todoist-frontend/insert-captured-subtree-under-project ()
   "Captured subtree insertion places heading under the target project."
