@@ -37,10 +37,23 @@
                (expand-file-name "~/org"))))
     (expand-file-name "todoist.org" dir)))
 
+(defun emacs-todoist--frontend-clear-transient-overlays ()
+  "Remove transient snippet overlays that can leak into frontend rendering."
+  (when (fboundp 'yas-exit-all-snippets)
+    (ignore-errors (yas-exit-all-snippets)))
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (let ((face (overlay-get ov 'face)))
+      (when (or (eq face 'yas-field-highlight-face)
+                (and (listp face) (memq 'yas-field-highlight-face face))
+                (overlay-get ov 'yas--field-overlay)
+                (overlay-get ov 'yas--snippet))
+        (delete-overlay ov)))))
+
 (defun emacs-todoist--frontend-setup-buffer (&optional preserve-maps)
   "Initialize current buffer as a Todoist frontend buffer.
 When PRESERVE-MAPS is non-nil, keep existing project/id maps."
   (org-mode)
+  (emacs-todoist--frontend-clear-transient-overlays)
   (emacs-todoist-frontend-mode 1)
   (emacs-todoist-mode 1)
   ;; Create a real buffer-local override from the customizable default.
