@@ -377,6 +377,47 @@ Also sets up the API token and ensures cleanup on failure."
                            (alist-get 'date due)))))))))
 
 ;; ==============================================================================
+;; Tests: Local recurring completion
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-live/local-done-on-recurring-reopens-task ()
+  "Marking a recurring task DONE locally should reopen at the next occurrence."
+  (with-live-sync
+    (let ((today (format-time-string "%Y-%m-%d")))
+      (with-org-buffer
+          (format "* TODO Recurring done test\nDEADLINE: <%s>\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+                  today)
+        ;; Initial push.
+        (emacs-todoist-sync-heading)
+        (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
+          (should todoist-id)
+          (push todoist-id emacs-todoist-test-live--created-ids)
+
+          ;; Complete locally, then sync.  For recurring tasks this should
+          ;; close the current occurrence and immediately reopen the next one.
+          (org-todo "DONE")
+          (emacs-todoist-sync-heading)
+
+          ;; Local heading should be reopened with recurrence still present.
+          (should (equal "TODO" (org-get-todo-state)))
+          (should (org-entry-get (point) "TODOIST_DUE_STRING"))
+          (should (equal "every day"
+                         (org-entry-get (point) "TODOIST_DUE_STRING")))
+          (should (emacs-todoist-org-heading-deadline))
+          (should-not (equal today (emacs-todoist-org-heading-deadline)))
+
+          ;; Remote task should remain active and recurring.
+          (let ((remote (emacs-todoist-test-live--fetch-task todoist-id)))
+            (should remote)
+            (should (equal "TODO"
+                           (emacs-todoist--checked-to-state
+                            (alist-get 'checked remote))))
+            (let ((due (alist-get 'due remote)))
+              (should due)
+              (should (equal "every day" (alist-get 'string due)))
+              (should (alist-get 'is_recurring due)))))))))
+
+;; ==============================================================================
 ;; Tests: Description round-trip
 ;; ==============================================================================
 

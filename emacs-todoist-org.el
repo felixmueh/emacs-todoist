@@ -51,6 +51,14 @@
     (when (string-match "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)" raw)
       (match-string 1 raw))))
 
+(defun emacs-todoist-org-heading-due-string ()
+  "Return the TODOIST_DUE_STRING property at point, or nil.
+Whitespace-only values are normalized to nil."
+  (when-let* ((value (org-entry-get (point) "TODOIST_DUE_STRING")))
+    (let ((trimmed (string-trim value)))
+      (unless (string-empty-p trimmed)
+        trimmed))))
+
 (defun emacs-todoist-org-heading-description ()
   "Return body text of the heading at point, excluding property drawers,
 planning lines, and sub-headings.  Returns \"\" when there is no body."
@@ -130,17 +138,19 @@ Each element is (KEY . VALUE) where KEY is like \"TODOIST_ID\"."
 
 (defun emacs-todoist-org-heading-local-hash ()
   "Compute a SHA-1 hash of the heading's sync-relevant fields.
-The hash covers title, deadline, description, and TODO state so we can
-detect local edits that need to be pushed to Todoist."
+The hash covers title, deadline, due string, description, and TODO
+state so we can detect local edits that need to be pushed to Todoist."
   (let ((title    (emacs-todoist-org--normalize-hash-string
                    (emacs-todoist-org-heading-title)))
         (deadline (emacs-todoist-org--normalize-hash-string
                    (emacs-todoist-org-heading-deadline)))
+        (due-string (emacs-todoist-org--normalize-hash-string
+                     (emacs-todoist-org-heading-due-string)))
         (desc     (emacs-todoist-org--normalize-hash-string
                    (emacs-todoist-org-heading-description)))
         (state    (emacs-todoist-org--normalize-hash-string
                    (emacs-todoist-org-heading-todo-state))))
-    (sha1 (format "%S" (list title deadline desc state)))))
+    (sha1 (format "%S" (list title deadline due-string desc state)))))
 
 (defun emacs-todoist-org-heading-local-changed-p ()
   "Return t if the heading at point has changed since last sync.
@@ -240,7 +250,7 @@ Searches the entire current buffer."
 DATA keys:
   `content'     — task title string
   `description' — body text string
-  `due'         — alist with `date' key (\"YYYY-MM-DD\") or nil
+  `due'         — alist with `date'/`string'/`is_recurring' keys or nil
   `checked'     — 0 (open) or 1 (completed)"
   (save-excursion
     (org-back-to-heading t)
@@ -264,6 +274,16 @@ DATA keys:
           (org-deadline nil date-str)
         ;; Remove deadline when remote has none.
         (org-deadline '(4))))
+    ;; -- Update recurrence property --
+    (let* ((due (alist-get 'due data))
+           (raw-recurring (and due (alist-get 'is_recurring due)))
+           (is-recurring (and raw-recurring
+                              (not (eq raw-recurring :json-false))
+                              (not (equal raw-recurring 0))))
+           (due-string (and due (alist-get 'string due))))
+      (if (and is-recurring due-string)
+          (org-entry-put (point) "TODOIST_DUE_STRING" (format "%s" due-string))
+        (org-entry-delete (point) "TODOIST_DUE_STRING")))
     ;; -- Update description/body --
     (let ((new-desc (or (alist-get 'description data) "")))
       (emacs-todoist-org--replace-body new-desc))))
@@ -334,10 +354,11 @@ Checks three sources in order, returning the first non-nil value:
 (defun emacs-todoist-org-heading-to-alist ()
   "Bundle the heading at point into an alist with all sync-relevant fields.
 Returns an alist with keys: `title', `description', `deadline',
-`todo-state', `children', and `project'."
+`due-string', `todo-state', `children', and `project'."
   (list (cons 'title       (emacs-todoist-org-heading-title))
         (cons 'description (emacs-todoist-org-heading-description))
         (cons 'deadline    (emacs-todoist-org-heading-deadline))
+        (cons 'due-string  (emacs-todoist-org-heading-due-string))
         (cons 'todo-state  (emacs-todoist-org-heading-todo-state))
         (cons 'children    (emacs-todoist-org-heading-children))
         (cons 'project     (emacs-todoist-org-resolve-project))))

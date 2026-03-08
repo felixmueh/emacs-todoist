@@ -65,6 +65,16 @@ Point is placed at the first heading."
   (with-org-buffer "* TODO Buy groceries\n"
     (should (null (emacs-todoist-org-heading-deadline)))))
 
+(ert-deftest emacs-todoist-org-due-string-present ()
+  "Returns TODOIST_DUE_STRING when set."
+  (with-org-buffer "* TODO Buy groceries\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+    (should (equal "every day" (emacs-todoist-org-heading-due-string)))))
+
+(ert-deftest emacs-todoist-org-due-string-absent ()
+  "Returns nil when TODOIST_DUE_STRING is missing."
+  (with-org-buffer "* TODO Buy groceries\n"
+    (should (null (emacs-todoist-org-heading-due-string)))))
+
 ;; ==============================================================================
 ;; Description extraction
 ;; ==============================================================================
@@ -184,6 +194,15 @@ Point is placed at the first heading."
     (with-org-buffer "* TODO Task\nDEADLINE: <2026-01-15 Thu>\n"
       (setq h1 (emacs-todoist-org-heading-local-hash)))
     (with-org-buffer "* TODO Task\nDEADLINE: <2026-02-20 Fri>\n"
+      (setq h2 (emacs-todoist-org-heading-local-hash)))
+    (should-not (equal h1 h2))))
+
+(ert-deftest emacs-todoist-org-hash-changes-with-due-string ()
+  "Changing TODOIST_DUE_STRING produces a different hash."
+  (let (h1 h2)
+    (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+      (setq h1 (emacs-todoist-org-heading-local-hash)))
+    (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_DUE_STRING: every week\n:END:\n"
       (setq h2 (emacs-todoist-org-heading-local-hash)))
     (should-not (equal h1 h2))))
 
@@ -315,6 +334,30 @@ Point is placed at the first heading."
        (checked . 0)))
     (should (equal (emacs-todoist-org-heading-todo-state) "TODO"))))
 
+(ert-deftest emacs-todoist-org-apply-remote-recurring-sets-due-string ()
+  "apply-remote writes TODOIST_DUE_STRING for recurring due values."
+  (with-org-buffer "* TODO Task\n"
+    (emacs-todoist-org-apply-remote
+     '((content . "Task")
+       (description . "")
+       (due . ((date . "2026-03-01")
+               (string . "every day")
+               (is_recurring . t)))
+       (checked . 0)))
+    (should (equal "every day" (org-entry-get (point) "TODOIST_DUE_STRING")))))
+
+(ert-deftest emacs-todoist-org-apply-remote-nonrecurring-clears-due-string ()
+  "apply-remote clears TODOIST_DUE_STRING when remote is non-recurring."
+  (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+    (emacs-todoist-org-apply-remote
+     '((content . "Task")
+       (description . "")
+       (due . ((date . "2026-03-01")
+               (string . "2026-03-01")
+               (is_recurring . :json-false)))
+       (checked . 0)))
+    (should-not (org-entry-get (point) "TODOIST_DUE_STRING"))))
+
 ;; ==============================================================================
 ;; resolve-project
 ;; ==============================================================================
@@ -387,7 +430,7 @@ Point is placed at the first heading."
 (ert-deftest emacs-todoist-org-heading-to-alist-complete ()
   "Returns correct alist with all fields."
   (with-org-buffer
-      "#+TODOIST_PROJECT: TestProj\n* TODO Buy groceries\nDEADLINE: <2026-01-15 Thu>\nShopping list.\n** Milk\n** Eggs\n"
+      "#+TODOIST_PROJECT: TestProj\n* TODO Buy groceries\nDEADLINE: <2026-01-15 Thu>\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\nShopping list.\n** Milk\n** Eggs\n"
     ;; Navigate to the top-level heading.
     (goto-char (point-min))
     (re-search-forward "^\\*[^*]")
@@ -397,6 +440,7 @@ Point is placed at the first heading."
       (should (equal (alist-get 'title alist) "Buy groceries"))
       (should (equal (alist-get 'description alist) "Shopping list."))
       (should (equal (alist-get 'deadline alist) "2026-01-15"))
+      (should (equal (alist-get 'due-string alist) "every day"))
       (should (equal (alist-get 'todo-state alist) "TODO"))
       (should (= (length (alist-get 'children alist)) 2))
       (should (equal (alist-get 'project alist) "TestProj")))))

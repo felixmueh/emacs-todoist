@@ -108,6 +108,23 @@ that the Todoist Sync API expects."
          (due (alist-get 'due (alist-get 'args cmd))))
     (should (equal "2026-01-15" (alist-get 'date due)))))
 
+(ert-deftest emacs-todoist-api-item-add/due-string ()
+  "`:due-string' is encoded under the nested due object."
+  (let* ((cmd (emacs-todoist-api-item-add "Recurring task"
+               :due-string "every day"))
+         (due (alist-get 'due (alist-get 'args cmd))))
+    (should (equal "every day" (alist-get 'string due)))
+    (should-not (alist-get 'date due))))
+
+(ert-deftest emacs-todoist-api-item-add/due-date-and-string ()
+  "`:due-date' and `:due-string' can be sent together."
+  (let* ((cmd (emacs-todoist-api-item-add "Recurring task"
+               :due-date "2026-03-09"
+               :due-string "every day"))
+         (due (alist-get 'due (alist-get 'args cmd))))
+    (should (equal "2026-03-09" (alist-get 'date due)))
+    (should (equal "every day" (alist-get 'string due)))))
+
 (ert-deftest emacs-todoist-api-item-add/temp-id ()
   "`:temp-id' sets the `temp_id' field on the outer command, not in args."
   (let ((cmd (emacs-todoist-api-item-add "New task" :temp-id "tmp-abc")))
@@ -142,6 +159,23 @@ This prevents accidentally clearing fields on Todoist's side."
          (due (alist-get 'due (alist-get 'args cmd))))
     (should (equal "2026-03-01" (alist-get 'date due)))))
 
+(ert-deftest emacs-todoist-api-item-update/due-string ()
+  "`:due-string' in item_update is encoded under due.string."
+  (let* ((cmd (emacs-todoist-api-item-update "task-42" :due-string "every week"))
+         (due (alist-get 'due (alist-get 'args cmd))))
+    (should (equal "every week" (alist-get 'string due)))
+    (should-not (alist-get 'date due))))
+
+(ert-deftest emacs-todoist-api-item-update/due-date-and-string ()
+  "item_update supports due.date + due.string together."
+  (let* ((cmd (emacs-todoist-api-item-update
+               "task-42"
+               :due-date "2026-03-15"
+               :due-string "every week"))
+         (due (alist-get 'due (alist-get 'args cmd))))
+    (should (equal "2026-03-15" (alist-get 'date due)))
+    (should (equal "every week" (alist-get 'string due)))))
+
 ;; ==============================================================================
 ;; item-complete
 ;; ==============================================================================
@@ -164,6 +198,19 @@ This prevents accidentally clearing fields on Todoist's side."
 ;; ==============================================================================
 ;; item-uncomplete
 ;; ==============================================================================
+
+(ert-deftest emacs-todoist-api-item-close/type ()
+  "item_close commands have the correct type string."
+  (let ((cmds (emacs-todoist-api-item-close '("id-1"))))
+    (should (= 1 (length cmds)))
+    (should (equal "item_close" (alist-get 'type (car cmds))))))
+
+(ert-deftest emacs-todoist-api-item-close/multiple-ids ()
+  "Multiple IDs produce one `item_close' per ID."
+  (let ((cmds (emacs-todoist-api-item-close '("a" "b"))))
+    (should (= 2 (length cmds)))
+    (should (equal "a" (alist-get 'id (alist-get 'args (nth 0 cmds)))))
+    (should (equal "b" (alist-get 'id (alist-get 'args (nth 1 cmds)))))))
 
 (ert-deftest emacs-todoist-api-item-uncomplete/type ()
   "item_uncomplete commands have the correct type string."

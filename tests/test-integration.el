@@ -229,6 +229,105 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
         (should (org-entry-get (point) "TODOIST_REMOTE_HASH"))))))
 
 ;; ==============================================================================
+;; DONE push behavior (recurring-safe completion)
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/build-push-commands-done-uses-item-close ()
+  "DONE pushes use item_close (not item_complete)."
+  (with-org-buffer "* DONE Task\n"
+    (let ((cmds (emacs-todoist--build-push-commands "task-1")))
+      (should (cl-some (lambda (cmd)
+                         (equal "item_close" (alist-get 'type cmd)))
+                       cmds))
+      (should-not (cl-some (lambda (cmd)
+                             (equal "item_complete" (alist-get 'type cmd)))
+                           cmds)))))
+
+(ert-deftest emacs-todoist-integration/build-push-commands-done-no-date-only-due ()
+  "DONE pushes do not send due.date-only updates."
+  (with-org-buffer "* DONE Task\nDEADLINE: <2026-03-08 Sun>\n"
+    (let* ((cmds (emacs-todoist--build-push-commands "task-1"))
+           (update (cl-find-if (lambda (cmd)
+                                 (equal "item_update" (alist-get 'type cmd)))
+                               cmds))
+           (args (alist-get 'args update)))
+      (should update)
+      (should-not (alist-get 'due args)))))
+
+(ert-deftest emacs-todoist-integration/build-push-commands-done-recurring-sends-due-string ()
+  "DONE pushes with TODOIST_DUE_STRING send due.string (and due.date when present)."
+  (with-org-buffer
+      "* DONE Task\nDEADLINE: <2026-03-08 Sun>\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+    (let* ((cmds (emacs-todoist--build-push-commands "task-1"))
+           (update (cl-find-if (lambda (cmd)
+                                 (equal "item_update" (alist-get 'type cmd)))
+                               cmds))
+           (due (alist-get 'due (alist-get 'args update))))
+      (should update)
+      (should (equal "every day" (alist-get 'string due)))
+      (should (equal "2026-03-08" (alist-get 'date due))))))
+
+(ert-deftest emacs-todoist-integration/push-done-reconciles-from-response-item ()
+  "DONE push applies returned remote item state without extra fetch."
+  (with-org-buffer
+      "* DONE Recurring task\nDEADLINE: <2026-03-08 Sun>\n:PROPERTIES:\n:TODOIST_ID: task-1\n:TODOIST_DUE_STRING: every day\n:TODOIST_SYNC_TOKEN: tok-0\n:END:\n"
+    (let ((call-count 0)
+          (action-called nil)
+          (emacs-todoist-on-done-action (lambda (_marker)
+                                          (setq action-called t))))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (cl-incf call-count)
+                   (should commands)
+                   (funcall callback
+                            '((sync_token . "tok-push")
+                              (items . (((id . "task-1")
+                                         (content . "Recurring task")
+                                         (description . "")
+                                         (due . ((date . "2026-03-09")
+                                                 (string . "every day")
+                                                 (is_recurring . t)))
+                                         (checked . 0)))))))))
+        (emacs-todoist-push-heading))
+      (should (= 1 call-count))
+      (should (equal "TODO" (org-get-todo-state)))
+      (should (equal "2026-03-09" (emacs-todoist-org-heading-deadline)))
+      (should (equal "every day" (org-entry-get (point) "TODOIST_DUE_STRING")))
+      (should (equal "tok-push" (org-entry-get (point) "TODOIST_SYNC_TOKEN")))
+      (should-not action-called))))
+
+(ert-deftest emacs-todoist-integration/push-done-reconcile-fallback-fetch ()
+  "DONE push fetches full state once when response omits the pushed item."
+  (with-org-buffer
+      "* DONE Recurring task\nDEADLINE: <2026-03-08 Sun>\n:PROPERTIES:\n:TODOIST_ID: task-1\n:TODOIST_DUE_STRING: every day\n:TODOIST_SYNC_TOKEN: tok-0\n:END:\n"
+    (let ((calls '()))
+      (cl-letf
+          (((symbol-function 'emacs-todoist-api-sync)
+            (lambda (sync-token _resource-types commands callback)
+              (push (list sync-token commands) calls)
+              (if commands
+                  (funcall callback
+                           '((sync_token . "tok-push")
+                             (items . nil)))
+                (funcall callback
+                         '((sync_token . "tok-fetch")
+                           (items . (((id . "task-1")
+                                      (content . "Recurring task")
+                                      (description . "")
+                                      (due . ((date . "2026-03-09")
+                                              (string . "every day")
+                                              (is_recurring . t)))
+                                      (checked . 0))))))))))
+        (emacs-todoist-push-heading))
+      ;; One push call plus one fallback fetch call.
+      (should (= 2 (length calls)))
+      (should (equal "*" (caar calls)))
+      (should (null (cadar calls)))
+      (should (equal "TODO" (org-get-todo-state)))
+      (should (equal "2026-03-09" (emacs-todoist-org-heading-deadline)))
+      (should (equal "tok-fetch" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+;; ==============================================================================
 ;; Neither changed (up to date)
 ;; ==============================================================================
 
@@ -461,6 +560,41 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
         (emacs-todoist-push-heading)))
 
     (should (equal "real-new-1" (org-entry-get (point) "TODOIST_ID")))))
+
+;; ==============================================================================
+;; Recurrence command
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/set-recurrence-updates-property ()
+  "set-recurrence writes TODOIST_DUE_STRING on the current heading."
+  (with-org-buffer "* TODO Task\n"
+    (emacs-todoist-set-recurrence "every weekday")
+    (should (equal "every weekday"
+                   (org-entry-get (point) "TODOIST_DUE_STRING")))))
+
+(ert-deftest emacs-todoist-integration/set-recurrence-empty-clears-property ()
+  "Empty set-recurrence input clears TODOIST_DUE_STRING."
+  (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
+    (emacs-todoist-set-recurrence "   ")
+    (should-not (org-entry-get (point) "TODOIST_DUE_STRING"))))
+
+(ert-deftest emacs-todoist-integration/set-recurrence-linked-no-sync ()
+  "On linked headings, set-recurrence does not auto-sync."
+  (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_ID: task-1\n:END:\n"
+    (let ((sync-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-sync-heading)
+                 (lambda () (setq sync-called t))))
+        (emacs-todoist-set-recurrence "every month"))
+      (should-not sync-called))))
+
+(ert-deftest emacs-todoist-integration/set-recurrence-unlinked-no-sync ()
+  "On unlinked headings, set-recurrence does not trigger sync."
+  (with-org-buffer "* TODO Task\n"
+    (let ((sync-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-sync-heading)
+                 (lambda () (setq sync-called t))))
+        (emacs-todoist-set-recurrence "every month"))
+      (should-not sync-called))))
 
 ;; ==============================================================================
 ;; Force pull
@@ -1363,7 +1497,12 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
   "Changing TODO state auto-syncs when `emacs-todoist-mode' is enabled."
   (with-org-buffer "* TODO Task\n"
     (let ((emacs-todoist-auto-sync-on-todo-change t)
-          (sync-call-count 0))
+          (sync-call-count 0)
+          (done-item '((id . "task-1")
+                       (content . "Task")
+                       (description . "")
+                       (due . nil)
+                       (checked . 1))))
       (emacs-todoist-org-set-props
        '(("TODOIST_ID" . "task-1")
          ("TODOIST_LOCAL_HASH" . "stale")
@@ -1377,8 +1516,8 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
                                 '((sync_token . "tok-fetch")
                                   (items . nil)))
                      (funcall callback
-                              '((sync_token . "tok-push")
-                                (items . nil)))))))
+                               `((sync_token . "tok-push")
+                                 (items . (,done-item))))))))
         (emacs-todoist-mode 1)
         (org-todo "DONE")
         (should (= 2 sync-call-count))))))

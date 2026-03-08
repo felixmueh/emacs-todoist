@@ -17,7 +17,8 @@
 ;;   Token:       -api-token (handles string or function)
 ;;   UUID:        -api-generate-uuid (RFC 4122 v4)
 ;;   Commands:    -api-build-command, -api-item-add, -api-item-update,
-;;                -api-item-complete, -api-item-uncomplete, -api-item-delete
+;;                -api-item-complete, -api-item-close, -api-item-uncomplete,
+;;                -api-item-delete
 ;;   Parsing:     -api-parse-response (extracts sync_token, items, etc.)
 ;;   Hashing:     -api-hash-item (SHA-1 of sync-relevant fields)
 ;;   HTTP:        -api-sync (core async call), -api-fetch-items, -api-fetch-projects
@@ -102,9 +103,12 @@ Keyword ARGS:
   :project-id   — project ID string
   :parent-id    — parent task ID string
   :due-date     — deadline as \"YYYY-MM-DD\", converted to Todoist due object
+  :due-string   — recurring/natural-language due string (e.g. \"every day\")
   :temp-id      — temporary ID for the new item"
   (let ((cmd-args `((content . ,content)))
-        (temp-id  (plist-get args :temp-id)))
+        (temp-id  (plist-get args :temp-id))
+        (due-date (plist-get args :due-date))
+        (due-string (plist-get args :due-string)))
     ;; Only include optional fields when explicitly provided.  We check
     ;; `plist-member' rather than `plist-get' so that nil-valued keys are
     ;; still omitted (a nil description is meaningless to Todoist).
@@ -114,8 +118,13 @@ Keyword ARGS:
       (push `(project_id . ,pid) cmd-args))
     (when-let* ((pid (plist-get args :parent-id)))
       (push `(parent_id . ,pid) cmd-args))
-    (when-let* ((date (plist-get args :due-date)))
-      (push `(due . ((date . ,date))) cmd-args))
+    (when (or due-date due-string)
+      (let ((due-obj '()))
+        (when due-date
+          (push `(date . ,due-date) due-obj))
+        (when due-string
+          (push `(string . ,due-string) due-obj))
+        (push `(due . ,(nreverse due-obj)) cmd-args)))
     (emacs-todoist-api-build-command "item_add" cmd-args temp-id)))
 
 (defun emacs-todoist-api-item-update (id &rest args)
@@ -124,16 +133,24 @@ Keyword ARGS:
   :content      — new title
   :description  — new description
   :due-date     — new deadline as \"YYYY-MM-DD\", or nil to clear
+  :due-string   — recurring/natural-language due string (e.g. \"every day\")
   :project-id   — move to a different project"
-  (let ((cmd-args `((id . ,id))))
+  (let ((cmd-args `((id . ,id)))
+        (due-date (plist-get args :due-date))
+        (due-string (plist-get args :due-string)))
     (when-let* ((content (plist-get args :content)))
       (push `(content . ,content) cmd-args))
     (when-let* ((desc (plist-get args :description)))
       (push `(description . ,desc) cmd-args))
     (when-let* ((pid (plist-get args :project-id)))
       (push `(project_id . ,pid) cmd-args))
-    (when-let* ((date (plist-get args :due-date)))
-      (push `(due . ((date . ,date))) cmd-args))
+    (when (or due-date due-string)
+      (let ((due-obj '()))
+        (when due-date
+          (push `(date . ,due-date) due-obj))
+        (when due-string
+          (push `(string . ,due-string) due-obj))
+        (push `(due . ,(nreverse due-obj)) cmd-args)))
     (emacs-todoist-api-build-command "item_update" cmd-args)))
 
 (defun emacs-todoist-api-item-complete (ids)
@@ -142,6 +159,13 @@ IDS is a list of task ID strings.  Returns a list of command alists,
 one per ID, since the Sync API v1 `item_complete' takes a single `id'."
   (mapcar (lambda (id)
             (emacs-todoist-api-build-command "item_complete" `((id . ,id))))
+          ids))
+
+(defun emacs-todoist-api-item-close (ids)
+  "Build `item_close' commands for each ID in IDS.
+`item_close' correctly advances recurring tasks to their next occurrence."
+  (mapcar (lambda (id)
+            (emacs-todoist-api-build-command "item_close" `((id . ,id))))
           ids))
 
 (defun emacs-todoist-api-item-uncomplete (ids)
