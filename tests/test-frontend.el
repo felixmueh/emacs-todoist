@@ -9,10 +9,16 @@
 (defmacro emacs-todoist-test-with-clean-frontend (&rest body)
   "Run BODY and always kill the frontend buffer afterwards."
   (declare (indent 0))
-  `(unwind-protect
-       (progn ,@body)
-     (when-let* ((buf (get-buffer emacs-todoist-frontend-buffer-name)))
-       (kill-buffer buf))))
+  `(let* ((org-directory (make-temp-file "et-org-" t))
+          (frontend-file (expand-file-name "todoist.org" org-directory)))
+     (unwind-protect
+         (progn ,@body)
+       (when-let* ((buf (get-file-buffer frontend-file)))
+         (kill-buffer buf))
+       (when (file-exists-p frontend-file)
+         (delete-file frontend-file))
+       (when (file-directory-p org-directory)
+         (delete-directory org-directory t)))))
 
 (defmacro emacs-todoist-test-with-org-buffer (text &rest body)
   "Execute BODY in a temp org buffer initialized with TEXT."
@@ -352,7 +358,8 @@
         (should buf)
         (with-current-buffer buf
           (should (derived-mode-p 'org-mode))
-          (should (null buffer-file-name))
+          (should (equal (expand-file-name "todoist.org" org-directory)
+                         buffer-file-name))
           (should-not (buffer-modified-p))
           (should emacs-todoist-frontend-mode)
           (should emacs-todoist-mode))))))
@@ -609,7 +616,7 @@
       (should (>= calls 3)))))
 
 (ert-deftest emacs-todoist-frontend/agenda-command-syncs-then-opens-restricted-view ()
-  "Frontend agenda command syncs first, then opens agenda from frontend snapshot."
+  "Frontend agenda command syncs first, then opens agenda from frontend file."
   (emacs-todoist-test-with-clean-frontend
     (let (seen-agenda-files)
       (cl-letf (((symbol-function 'emacs-todoist-api-sync)
@@ -633,8 +640,8 @@
         (emacs-todoist-frontend-agenda)
         (should (= 1 (length seen-agenda-files)))
         (let ((agenda-file (car seen-agenda-files)))
-          (should (stringp agenda-file))
-          (should (file-exists-p agenda-file))
+          (should (equal (expand-file-name "todoist.org" org-directory)
+                         agenda-file))
           (with-temp-buffer
             (insert-file-contents agenda-file)
             (goto-char (point-min))

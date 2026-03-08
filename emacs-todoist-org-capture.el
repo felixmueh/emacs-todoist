@@ -50,7 +50,7 @@ When nil, project resolution uses normal heading/file/default fallback."
   :group 'emacs-todoist-org-capture)
 
 (defcustom emacs-todoist-org-capture-route-to-frontend t
-  "When non-nil, Todoist captures are moved into `*Todoist*' and synced there.
+  "When non-nil, Todoist captures are moved into the frontend buffer and synced.
 When nil, captures are pushed in-place at the capture target."
   :type 'boolean
   :group 'emacs-todoist-org-capture)

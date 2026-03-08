@@ -73,9 +73,9 @@
   "emacs-todoist-org-capture" nil t)
 
 (defvar emacs-todoist-frontend-mode nil
-  "Non-nil in `*Todoist*' frontend buffers.")
+  "Non-nil in frontend Todoist buffers.")
 
-(defvar emacs-todoist-frontend-buffer-name "*Todoist*"
+(defvar emacs-todoist-frontend-buffer-name "todoist.org"
   "Name of the Todoist frontend buffer.")
 
 (defvar emacs-todoist-mode nil
@@ -134,7 +134,7 @@ Supported values:
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-frontend-on-done-action 'delete-heading
-  "Buffer-local DONE action override used in `*Todoist*' frontend buffers.
+  "Buffer-local DONE action override used in frontend Todoist buffers.
 When this variable is buffer-local, it overrides
 `emacs-todoist-on-done-action' for that buffer."
   :type '(choice
@@ -150,7 +150,7 @@ When this variable is buffer-local, it overrides
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-capture-to-frontend t
-  "When non-nil, Todoist captures are moved to the `*Todoist*' buffer.
+  "When non-nil, Todoist captures are moved to the frontend Todoist buffer.
 After relocation, the captured heading is synced immediately."
   :type 'boolean
   :group 'emacs-todoist)
@@ -265,7 +265,9 @@ Returns non-nil when relocation+sync was performed."
              (marker-buffer marker)
              ;; Only route capture entries when frontend has already been
              ;; opened/rendered in this session.
-             (get-buffer emacs-todoist-frontend-buffer-name)
+             (or (get-buffer emacs-todoist-frontend-buffer-name)
+                 (and (fboundp 'emacs-todoist--frontend-file-path)
+                      (get-file-buffer (emacs-todoist--frontend-file-path))))
              (not emacs-todoist--capture-relocation-in-progress))
     (with-current-buffer (marker-buffer marker)
       (save-excursion

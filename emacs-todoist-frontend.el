@@ -10,7 +10,7 @@
 ;; Frontend rendering layer for emacs-todoist.
 ;;
 ;; Provides `emacs-todoist-open' to render Todoist tasks into an
-;; ephemeral org-mode buffer grouped by project, plus
+;; file-backed org-mode buffer grouped by project, plus
 ;; `emacs-todoist-frontend-sync' for incremental refresh.
 
 ;;; Code:
@@ -20,7 +20,7 @@
 (require 'cl-lib)
 (require 'emacs-todoist)
 
-(defvar emacs-todoist-frontend-buffer-name "*Todoist*"
+(defvar emacs-todoist-frontend-buffer-name "todoist.org"
   "Name of the Todoist frontend buffer.")
 
 (defvar-local emacs-todoist--frontend-project-map nil
@@ -29,8 +29,13 @@
 (defvar-local emacs-todoist--frontend-id-to-name nil
   "Hash table: project-id string to display name in frontend buffer.")
 
-(defvar emacs-todoist--frontend-agenda-snapshot-file nil
-  "Temp Org file used as agenda source for frontend agenda views.")
+(defun emacs-todoist--frontend-file-path ()
+  "Return the absolute path for the frontend file-backed Org buffer."
+  (let ((dir (if (and (stringp org-directory)
+                      (> (length org-directory) 0))
+                 org-directory
+               (expand-file-name "~/org"))))
+    (expand-file-name "todoist.org" dir)))
 
 (defun emacs-todoist--frontend-setup-buffer (&optional preserve-maps)
   "Initialize current buffer as a Todoist frontend buffer.
@@ -49,16 +54,20 @@ When PRESERVE-MAPS is non-nil, keep existing project/id maps."
 
 (defun emacs-todoist-frontend-ensure-buffer ()
   "Return the Todoist frontend buffer, creating and initializing it."
-  (let ((buf (get-buffer-create emacs-todoist-frontend-buffer-name)))
-    (with-current-buffer buf
-      (emacs-todoist--frontend-setup-buffer t)
-      (unless (hash-table-p emacs-todoist--frontend-project-map)
-        (setq-local emacs-todoist--frontend-project-map
-                    (emacs-todoist--frontend-build-project-map)))
-      (unless (hash-table-p emacs-todoist--frontend-id-to-name)
-        (setq-local emacs-todoist--frontend-id-to-name
-                    (emacs-todoist--frontend-seed-id-to-name-from-cache))))
-    buf))
+  (let* ((frontend-file (emacs-todoist--frontend-file-path))
+         (frontend-dir (file-name-directory frontend-file)))
+    (when (and frontend-dir (not (file-directory-p frontend-dir)))
+      (make-directory frontend-dir t))
+    (let ((buf (find-file-noselect frontend-file)))
+      (with-current-buffer buf
+        (emacs-todoist--frontend-setup-buffer t)
+        (unless (hash-table-p emacs-todoist--frontend-project-map)
+          (setq-local emacs-todoist--frontend-project-map
+                      (emacs-todoist--frontend-build-project-map)))
+        (unless (hash-table-p emacs-todoist--frontend-id-to-name)
+          (setq-local emacs-todoist--frontend-id-to-name
+                      (emacs-todoist--frontend-seed-id-to-name-from-cache))))
+      buf)))
 
 (defun emacs-todoist-frontend-insert-captured-subtree (subtree-text project-id
                                                                      &optional project-name)
@@ -211,57 +220,59 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
   "Keymap for `emacs-todoist-frontend-mode'.")
 
 (define-minor-mode emacs-todoist-frontend-mode
-  "Minor mode for the `*Todoist*' frontend buffer."
+  "Minor mode for the file-backed frontend Todoist buffer."
   :lighter " Todoist"
   :keymap emacs-todoist-frontend-mode-map)
 
 ;;;###autoload
 (defun emacs-todoist-open ()
-  "Open and render Todoist tasks in an ephemeral frontend org buffer."
+  "Open and render Todoist tasks in the frontend `todoist.org' Org buffer."
   (interactive)
-  (if-let* ((todoist-buf (get-buffer emacs-todoist-frontend-buffer-name)))
+  (let* ((frontend-file (emacs-todoist--frontend-file-path))
+         (already-open (get-file-buffer frontend-file)))
+    (if-let* ((todoist-buf (and already-open
+                                (emacs-todoist-frontend-ensure-buffer))))
       (progn
         (switch-to-buffer todoist-buf)
         (with-current-buffer todoist-buf
           (emacs-todoist--frontend-setup-buffer t))
         (emacs-todoist-frontend-sync))
-    (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer)))
-      (switch-to-buffer todoist-buf)
-      (with-current-buffer todoist-buf
-        (erase-buffer)
-        (emacs-todoist--frontend-setup-buffer))
-      (emacs-todoist-api-sync
-       "*" '("items" "projects") nil
-       (lambda (response)
-         (if (alist-get 'error response)
-             (progn
-               (emacs-todoist-log 'error "Frontend open failed: %s"
-                                  (alist-get 'error response))
-               (message "emacs-todoist: frontend open failed"))
-           (when (buffer-live-p todoist-buf)
-             (with-current-buffer todoist-buf
-               (let* ((items (or (alist-get 'items response) '()))
-                      (projects (or (alist-get 'projects response) '()))
-                      (sync-token (alist-get 'sync_token response))
-                      (sorted-items (emacs-todoist--topological-sort-items items))
-                      (partitioned (emacs-todoist--frontend-partition-items sorted-items))
-                      (top-level-items (car partitioned))
-                      (nested-items (cdr partitioned))
-                      (id-map (make-hash-table :test #'equal)))
-                 (erase-buffer)
-                 (emacs-todoist--frontend-setup-buffer)
-                 (emacs-todoist--project-cache-populate projects)
-                 (setq-local emacs-todoist--frontend-id-to-name
-                             (emacs-todoist--frontend-id-name-map-from-projects projects))
-                 (setq-local emacs-todoist--frontend-project-map
-                             (make-hash-table :test #'equal))
-                 (emacs-todoist--apply-top-level-items
-                  top-level-items sync-token id-map
-                  #'emacs-todoist--frontend-project-fn)
-                 (emacs-todoist--apply-items nested-items sync-token id-map)
-                 (goto-char (point-min))
-                 (set-buffer-modified-p nil)
-                 (message "emacs-todoist: rendered %d tasks" (length items)))))))))))
+      (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer)))
+        (switch-to-buffer todoist-buf)
+        (with-current-buffer todoist-buf
+          (emacs-todoist--frontend-setup-buffer))
+        (emacs-todoist-api-sync
+         "*" '("items" "projects") nil
+         (lambda (response)
+           (if (alist-get 'error response)
+               (progn
+                 (emacs-todoist-log 'error "Frontend open failed: %s"
+                                    (alist-get 'error response))
+                 (message "emacs-todoist: frontend open failed"))
+             (when (buffer-live-p todoist-buf)
+               (with-current-buffer todoist-buf
+                 (let* ((items (or (alist-get 'items response) '()))
+                        (projects (or (alist-get 'projects response) '()))
+                        (sync-token (alist-get 'sync_token response))
+                        (sorted-items (emacs-todoist--topological-sort-items items))
+                        (partitioned (emacs-todoist--frontend-partition-items sorted-items))
+                        (top-level-items (car partitioned))
+                        (nested-items (cdr partitioned))
+                        (id-map (make-hash-table :test #'equal)))
+                   (erase-buffer)
+                   (emacs-todoist--frontend-setup-buffer)
+                   (emacs-todoist--project-cache-populate projects)
+                   (setq-local emacs-todoist--frontend-id-to-name
+                               (emacs-todoist--frontend-id-name-map-from-projects projects))
+                   (setq-local emacs-todoist--frontend-project-map
+                               (make-hash-table :test #'equal))
+                   (emacs-todoist--apply-top-level-items
+                    top-level-items sync-token id-map
+                    #'emacs-todoist--frontend-project-fn)
+                   (emacs-todoist--apply-items nested-items sync-token id-map)
+                   (goto-char (point-min))
+                   (save-buffer)
+                   (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
 ;;;###autoload
 (defun emacs-todoist-frontend-sync (&optional done-fn)
@@ -276,27 +287,27 @@ successful sync completion."
   (unless (hash-table-p emacs-todoist--frontend-id-to-name)
     (setq-local emacs-todoist--frontend-id-to-name
                 (emacs-todoist--frontend-seed-id-to-name-from-cache)))
-  (let ((linked-markers (emacs-todoist-org-synced-entries)))
+  (let ((linked-markers (emacs-todoist-org-synced-entries))
+        (frontend-buf (current-buffer)))
     (emacs-todoist--sync-entries
      linked-markers nil
      :post-classify-fn #'emacs-todoist--frontend-sync-post-classify
-     :done-fn done-fn)))
-
-(defun emacs-todoist--frontend-agenda-snapshot-path ()
-  "Return the temp file path used for frontend agenda snapshots."
-  (unless (and (stringp emacs-todoist--frontend-agenda-snapshot-file)
-               (file-exists-p emacs-todoist--frontend-agenda-snapshot-file))
-    (setq emacs-todoist--frontend-agenda-snapshot-file
-          (make-temp-file "emacs-todoist-frontend-agenda-" nil ".org")))
-  emacs-todoist--frontend-agenda-snapshot-file)
+     :done-fn (lambda (summary)
+                (when (buffer-live-p frontend-buf)
+                  (with-current-buffer frontend-buf
+                    (when buffer-file-name
+                      (save-buffer))))
+                (when done-fn
+                  (funcall done-fn summary))))))
 
 (defun emacs-todoist--frontend-open-agenda-from-buffer ()
-  "Open Org date agenda view sourced only from the current frontend buffer."
-  (let ((agenda-file (emacs-todoist--frontend-agenda-snapshot-path)))
-    (let ((coding-system-for-write 'utf-8-unix))
-      (write-region (point-min) (point-max) agenda-file nil 'silent))
-    (let ((org-agenda-files (list agenda-file)))
-      (org-agenda-list))))
+  "Open Org date agenda view sourced only from the current frontend file."
+  (unless (and (stringp buffer-file-name)
+               (file-exists-p buffer-file-name))
+    (user-error "Frontend buffer is not visiting a file"))
+  (save-buffer)
+  (let ((org-agenda-files (list buffer-file-name)))
+    (org-agenda-list)))
 
 ;;;###autoload
 (defun emacs-todoist-frontend-agenda ()
