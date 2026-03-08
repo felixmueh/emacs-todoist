@@ -54,6 +54,27 @@
 (require 'emacs-todoist-api)
 (require 'cl-lib)
 
+;;;###autoload
+(autoload 'emacs-todoist-open "emacs-todoist-frontend" nil t)
+
+;;;###autoload
+(autoload 'emacs-todoist-frontend-sync "emacs-todoist-frontend" nil t)
+
+(autoload 'emacs-todoist-frontend-insert-captured-subtree
+  "emacs-todoist-frontend" nil nil)
+
+(autoload 'emacs-todoist-org-capture-install-template
+  "emacs-todoist-org-capture" nil t)
+
+(autoload 'emacs-todoist-org-capture
+  "emacs-todoist-org-capture" nil t)
+
+(defvar emacs-todoist-frontend-mode nil
+  "Non-nil in `*Todoist*' frontend buffers.")
+
+(defvar emacs-todoist-mode nil
+  "Non-nil when `emacs-todoist-mode' is enabled in the current buffer.")
+
 ;; ==============================================================================
 ;; Configuration
 ;; ==============================================================================
@@ -92,6 +113,42 @@ nil means unchecked (active), 1 means checked (completed)."
   :type 'string
   :group 'emacs-todoist)
 
+(defcustom emacs-todoist-on-done-action nil
+  "Action to run after a successful sync when a heading is DONE.
+Supported values:
+- nil               : keep heading as-is.
+- `delete-properties': remove all TODOIST_* properties.
+- `delete-heading'  : delete the heading subtree.
+- function          : called with one marker argument pointing at heading."
+  :type '(choice
+          (const :tag "Keep heading" nil)
+          (const :tag "Delete Todoist properties" delete-properties)
+          (const :tag "Delete heading" delete-heading)
+          (function :tag "Custom function"))
+  :group 'emacs-todoist)
+
+(defcustom emacs-todoist-frontend-on-done-action 'delete-heading
+  "Buffer-local DONE action override used in `*Todoist*' frontend buffers.
+When this variable is buffer-local, it overrides
+`emacs-todoist-on-done-action' for that buffer."
+  :type '(choice
+          (const :tag "Keep heading" nil)
+          (const :tag "Delete Todoist properties" delete-properties)
+          (const :tag "Delete heading" delete-heading)
+          (function :tag "Custom function"))
+  :group 'emacs-todoist)
+
+(defcustom emacs-todoist-auto-sync-on-todo-change t
+  "When non-nil, `emacs-todoist-mode' auto-syncs on TODO state changes."
+  :type 'boolean
+  :group 'emacs-todoist)
+
+(defcustom emacs-todoist-capture-to-frontend t
+  "When non-nil, Todoist captures are moved to the `*Todoist*' buffer.
+After relocation, the captured heading is synced immediately."
+  :type 'boolean
+  :group 'emacs-todoist)
+
 ;; ==============================================================================
 ;; Logging
 ;; ==============================================================================
@@ -100,6 +157,15 @@ nil means unchecked (active), 1 means checked (completed)."
 (defconst emacs-todoist--log-level-alist
   '((debug . 0) (info . 1) (error . 2))
   "Mapping from log level symbols to numeric priority.")
+
+(defvar emacs-todoist--suppress-auto-sync nil
+  "Internal recursion guard for TODO-state auto sync.")
+
+(defvar emacs-todoist--auto-sync-in-progress nil
+  "Non-nil while `emacs-todoist-mode' is processing an auto-sync hook.")
+
+(defvar emacs-todoist--capture-relocation-in-progress nil
+  "Internal guard to prevent nested capture relocation.")
 
 (defun emacs-todoist-log (level fmt &rest args)
   "Log a message at LEVEL using format string FMT and ARGS.
@@ -115,6 +181,91 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
         (with-current-buffer (get-buffer-create emacs-todoist-log-buffer-name)
           (goto-char (point-max))
           (insert (format "[%s] [%s] %s\n" timestamp level-str msg)))))))
+
+(defun emacs-todoist--effective-on-done-action ()
+  "Return the active DONE action for current buffer."
+  (if (local-variable-p 'emacs-todoist-frontend-on-done-action (current-buffer))
+      emacs-todoist-frontend-on-done-action
+    emacs-todoist-on-done-action))
+
+(defun emacs-todoist--run-on-done-action (marker)
+  "Run configured DONE action for MARKER if that heading is DONE."
+  (when (and (markerp marker) (marker-buffer marker))
+    (with-current-buffer (marker-buffer marker)
+      (save-excursion
+        (goto-char marker)
+        (when (equal (org-get-todo-state) "DONE")
+          (let ((action (emacs-todoist--effective-on-done-action)))
+            (pcase action
+              ('delete-properties
+               (dolist (prop (emacs-todoist-org-heading-props))
+                 (org-entry-delete (point) (car prop))))
+              ('delete-heading
+               (org-back-to-heading t)
+               (org-cut-subtree))
+              ((pred functionp)
+               (funcall action (copy-marker (point) t)))
+              (_ nil))))))))
+
+(defun emacs-todoist--auto-sync-todo-state-change ()
+  "Auto-sync the current heading after TODO state changes."
+  (when (and emacs-todoist-mode
+             emacs-todoist-auto-sync-on-todo-change
+             (not emacs-todoist--suppress-auto-sync)
+             (not emacs-todoist--auto-sync-in-progress)
+             (org-get-todo-state))
+    (let ((emacs-todoist--auto-sync-in-progress t))
+      (emacs-todoist-sync-heading))))
+
+(define-minor-mode emacs-todoist-mode
+  "Minor mode for automatic emacs-todoist behavior in Org buffers.
+When enabled, TODO keyword changes trigger `emacs-todoist-sync-heading'
+when `emacs-todoist-auto-sync-on-todo-change' is non-nil."
+  :lighter " ETodoist"
+  (if emacs-todoist-mode
+      (add-hook 'org-after-todo-state-change-hook
+                #'emacs-todoist--auto-sync-todo-state-change nil t)
+    (remove-hook 'org-after-todo-state-change-hook
+                 #'emacs-todoist--auto-sync-todo-state-change t)))
+
+(defun emacs-todoist--capture-process-marker (marker)
+  "Move capture entry at MARKER into frontend and sync it.
+Returns non-nil when relocation+sync was performed."
+  (when (and (markerp marker)
+             (marker-buffer marker)
+             (not emacs-todoist--capture-relocation-in-progress))
+    (with-current-buffer (marker-buffer marker)
+      (save-excursion
+        (goto-char marker)
+        (when (and (org-at-heading-p)
+                   (org-get-todo-state)
+                   (not (bound-and-true-p emacs-todoist-frontend-mode)))
+          (when-let* ((project (emacs-todoist-org-resolve-project)))
+            (let* ((beg (point))
+                   (end (save-excursion (org-end-of-subtree t t) (point)))
+                   (subtree (buffer-substring-no-properties beg end))
+                   (project-id (emacs-todoist--resolve-project-id project))
+                   (emacs-todoist--capture-relocation-in-progress t))
+              (delete-region beg end)
+              (unless (fboundp 'emacs-todoist-frontend-insert-captured-subtree)
+                (require 'emacs-todoist-frontend))
+              (when-let* ((frontend-marker
+                           (emacs-todoist-frontend-insert-captured-subtree
+                            subtree project-id project)))
+                (with-current-buffer (marker-buffer frontend-marker)
+                  (save-excursion
+                    (goto-char frontend-marker)
+                    (emacs-todoist-sync-heading)))
+                t))))))))
+
+(defun emacs-todoist--capture-after-finalize ()
+  "Compatibility finalize hook: process `org-capture-last-stored-marker'."
+  (when (and emacs-todoist-capture-to-frontend
+             (boundp 'org-capture-last-stored-marker)
+             (markerp org-capture-last-stored-marker)
+             (marker-buffer org-capture-last-stored-marker))
+    (emacs-todoist--capture-process-marker
+     (copy-marker org-capture-last-stored-marker t))))
 
 ;; ==============================================================================
 ;; Project cache
@@ -165,8 +316,9 @@ Tries a case-insensitive name lookup in the project cache first.
 If no match is found, assumes PROJECT-STRING is already a numeric ID
 and returns it as-is.  Returns nil if PROJECT-STRING is nil."
   (when project-string
-    (or (alist-get (downcase project-string) emacs-todoist--project-cache
-                   nil nil #'equal)
+    (or (and (listp emacs-todoist--project-cache)
+             (alist-get (downcase project-string) emacs-todoist--project-cache
+                        nil nil #'equal))
         project-string)))
 
 ;; ==============================================================================
@@ -234,6 +386,182 @@ allowing us to compute a remote hash for data we're about to push."
       (description . ,(or desc ""))
       (due         . ,(when due `((date . ,due))))
       (checked     . ,(emacs-todoist--state-to-checked state)))))
+
+;; ==============================================================================
+;; Item upsert helpers (shared by sync + frontend)
+;; ==============================================================================
+
+(defun emacs-todoist--item-id (item)
+  "Return ITEM's `id' as a string, or nil."
+  (when-let* ((id (alist-get 'id item)))
+    (format "%s" id)))
+
+(defun emacs-todoist--item-parent-id (item)
+  "Return ITEM's `parent_id' as a string, or nil for top-level items."
+  (let ((parent-id (alist-get 'parent_id item)))
+    (unless (or (null parent-id) (eq parent-id :json-false))
+      (format "%s" parent-id))))
+
+(defun emacs-todoist--item-project-id (item)
+  "Return ITEM's `project_id' as a string, or nil."
+  (when-let* ((project-id (alist-get 'project_id item)))
+    (format "%s" project-id)))
+
+(defun emacs-todoist--build-id-map-from-markers (markers)
+  "Build hash table mapping TODOIST_ID strings to MARKERS."
+  (let ((id-map (make-hash-table :test #'equal)))
+    (dolist (marker markers id-map)
+      (when (and (markerp marker) (marker-buffer marker))
+        (with-current-buffer (marker-buffer marker)
+          (save-excursion
+            (goto-char marker)
+            (when-let* ((item-id (org-entry-get (point) "TODOIST_ID")))
+              (puthash item-id (copy-marker (point) t) id-map))))))))
+
+(defun emacs-todoist--build-id-map ()
+  "Build TODOIST_ID → marker map for the current buffer."
+  (emacs-todoist--build-id-map-from-markers
+   (emacs-todoist-org-synced-entries)))
+
+(defun emacs-todoist--topological-sort-items (items)
+  "Return ITEMS sorted so parents precede children."
+  (let ((id-set (make-hash-table :test #'equal))
+        (children-by-parent (make-hash-table :test #'equal))
+        (roots '())
+        (queue '())
+        (seen (make-hash-table :test #'equal))
+        (sorted '()))
+    (dolist (item items)
+      (when-let* ((item-id (emacs-todoist--item-id item)))
+        (puthash item-id t id-set)))
+    (dolist (item items)
+      (let ((parent-id (emacs-todoist--item-parent-id item)))
+        (if (or (null parent-id) (not (gethash parent-id id-set)))
+            (push item roots)
+          (puthash parent-id
+                   (append (gethash parent-id children-by-parent)
+                           (list item))
+                   children-by-parent))))
+    (setq queue (nreverse roots))
+    (while queue
+      (let* ((item (pop queue))
+             (item-id (emacs-todoist--item-id item)))
+        (unless (and item-id (gethash item-id seen))
+          (when item-id
+            (puthash item-id t seen))
+          (push item sorted)
+          (when item-id
+            (setq queue (append queue
+                                (copy-sequence
+                                 (or (gethash item-id children-by-parent)
+                                     '()))))))))
+    ;; Keep cycle/orphan edge cases deterministic by appending unseen items.
+    (dolist (item items)
+      (when-let* ((item-id (emacs-todoist--item-id item)))
+        (unless (gethash item-id seen)
+          (push item sorted))))
+    (nreverse sorted)))
+
+(defun emacs-todoist--insert-child-heading (parent-marker)
+  "Insert an empty child heading under PARENT-MARKER.
+Returns a marker at the newly inserted heading."
+  (let (child-marker)
+    (with-current-buffer (marker-buffer parent-marker)
+      (save-excursion
+        (goto-char parent-marker)
+        (org-back-to-heading t)
+        (let ((child-level (1+ (org-current-level))))
+          (org-end-of-subtree t t)
+          (unless (bolp)
+            (insert "\n"))
+          (let ((start (point)))
+            (insert (make-string child-level ?*) " \n")
+            (goto-char start)
+            (setq child-marker (point-marker))
+            (set-marker-insertion-type child-marker t)))))
+    child-marker))
+
+(defun emacs-todoist--upsert-item-at-point (item sync-token)
+  "Apply ITEM to heading at point and write sync properties.
+SYNC-TOKEN is written when non-nil."
+  (let* ((item-id (emacs-todoist--item-id item))
+         (project-id (emacs-todoist--item-project-id item))
+         (pre-props (list (cons "TODOIST_ID" item-id))))
+    (when project-id
+      (push (cons "TODOIST_PROJECT" project-id) pre-props))
+    (when sync-token
+      (push (cons "TODOIST_SYNC_TOKEN" sync-token) pre-props))
+    ;; Write ID before applying remote fields to keep local hash stable.
+    (emacs-todoist-org-set-props (nreverse pre-props))
+    (let ((emacs-todoist--suppress-auto-sync t))
+      (emacs-todoist-org-apply-remote item))
+    (let ((post-props
+           `(("TODOIST_LOCAL_HASH"  . ,(emacs-todoist-org-heading-local-hash))
+             ("TODOIST_REMOTE_HASH" . ,(emacs-todoist-api-hash-item item)))))
+      (when sync-token
+        (push (cons "TODOIST_SYNC_TOKEN" sync-token) post-props))
+      (emacs-todoist-org-set-props (nreverse post-props)))))
+
+(defun emacs-todoist--apply-items (items sync-token id-map)
+  "Upsert ITEMS into the current org hierarchy using ID-MAP.
+Updates existing headings in place and inserts new headings when their
+parent exists in ID-MAP.  Returns the number of inserted headings."
+  (let ((inserted 0))
+    (dolist (item items inserted)
+      (when-let* ((item-id (emacs-todoist--item-id item)))
+        (let ((marker (gethash item-id id-map)))
+          (cond
+           ;; Existing heading: update in place.
+           ((and (markerp marker) (marker-buffer marker))
+            (with-current-buffer (marker-buffer marker)
+              (save-excursion
+                (goto-char marker)
+                (emacs-todoist--upsert-item-at-point item sync-token))))
+           ;; Missing heading: insert as child when parent exists.
+           (t
+            (when-let* ((parent-id (emacs-todoist--item-parent-id item))
+                        (parent-marker (gethash parent-id id-map))
+                        (_ (and (markerp parent-marker)
+                                (marker-buffer parent-marker))))
+              (let ((new-marker (emacs-todoist--insert-child-heading
+                                 parent-marker)))
+                (with-current-buffer (marker-buffer new-marker)
+                  (save-excursion
+                    (goto-char new-marker)
+                    (emacs-todoist--upsert-item-at-point item sync-token)))
+                (puthash item-id new-marker id-map)
+                (cl-incf inserted))))))))))
+
+(defun emacs-todoist--apply-top-level-items (items sync-token id-map project-fn)
+  "Insert top-level (or orphan) ITEMS using PROJECT-FN for placement.
+PROJECT-FN receives an item and should return a marker/position inside
+the parent project container subtree.  Returns inserted heading count."
+  (let ((inserted 0))
+    (dolist (item items inserted)
+      (when-let* ((item-id (emacs-todoist--item-id item)))
+        (let ((existing (gethash item-id id-map)))
+          (unless (and (markerp existing) (marker-buffer existing))
+          (let ((parent-id (emacs-todoist--item-parent-id item)))
+            (when (or (null parent-id) (not (gethash parent-id id-map)))
+              (let* ((anchor (funcall project-fn item))
+                     (project-marker
+                      (cond
+                       ((and (markerp anchor) (marker-buffer anchor)) anchor)
+                       ((integerp anchor)
+                        (save-excursion
+                          (goto-char anchor)
+                          (org-back-to-heading t)
+                          (copy-marker (point) t)))
+                       (t nil))))
+                (when (and project-marker (marker-buffer project-marker))
+                  (let ((new-marker (emacs-todoist--insert-child-heading
+                                     project-marker)))
+                    (with-current-buffer (marker-buffer new-marker)
+                      (save-excursion
+                        (goto-char new-marker)
+                        (emacs-todoist--upsert-item-at-point item sync-token)))
+                    (puthash item-id new-marker id-map)
+                      (cl-incf inserted))))))))))))
 
 ;; ==============================================================================
 ;; Command builders (extracted for reuse in bulk sync)
@@ -434,7 +762,8 @@ that should be stored after the push."
                (emacs-todoist-org-set-props
                 `(("TODOIST_LOCAL_HASH"  . ,local-hash)
                   ("TODOIST_REMOTE_HASH" . ,remote-hash)
-                  ("TODOIST_SYNC_TOKEN"  . ,resp-token))))))
+                  ("TODOIST_SYNC_TOKEN"  . ,resp-token)))
+               (emacs-todoist--run-on-done-action marker))))
          (emacs-todoist-log 'info "Pushed update successfully: %s" title)
          (message "emacs-todoist: pushed update for \"%s\"" title)))))))
 
@@ -451,7 +780,8 @@ SYNC-TOKEN is the new token to store."
 
     (save-excursion
       (goto-char marker)
-      (emacs-todoist-org-apply-remote remote-item)
+      (let ((emacs-todoist--suppress-auto-sync t))
+        (emacs-todoist-org-apply-remote remote-item))
       ;; After applying remote data, recompute both hashes.  The local
       ;; hash now reflects the updated heading, and the remote hash
       ;; reflects the item we just applied.
@@ -460,32 +790,38 @@ SYNC-TOKEN is the new token to store."
         (emacs-todoist-org-set-props
          `(("TODOIST_LOCAL_HASH"  . ,local-hash)
            ("TODOIST_REMOTE_HASH" . ,remote-hash)
-           ("TODOIST_SYNC_TOKEN"  . ,sync-token)))))
+           ("TODOIST_SYNC_TOKEN"  . ,sync-token))))
+      (emacs-todoist--run-on-done-action marker))
 
     (emacs-todoist-log 'info "Pulled remote changes for: %s" title)
     (message "emacs-todoist: pulled remote changes for \"%s\"" title)))
 
 (defun emacs-todoist--sync-children (items sync-token)
-  "Sync child headings of the heading at point using ITEMS from the API response.
-For each direct child that has a TODOIST_ID and a matching item in
-ITEMS, pull remote changes if the remote hash differs.  This handles
-the case where Todoist cascades state changes to subtasks (e.g.
-completing a parent also completes its children)."
-  (dolist (child-marker (emacs-todoist-org-heading-children))
-    (save-excursion
-      (goto-char child-marker)
-      (let* ((child-id (org-entry-get (point) "TODOIST_ID"))
-             (child-remote-hash (org-entry-get (point) "TODOIST_REMOTE_HASH")))
-        (when child-id
-          (let ((child-item
-                 (cl-find-if (lambda (item)
-                               (equal (format "%s" (alist-get 'id item))
-                                      child-id))
-                             items)))
-            (when child-item
-              (let ((new-hash (emacs-todoist-api-hash-item child-item)))
-                (unless (equal new-hash child-remote-hash)
-                  (emacs-todoist--apply-pull child-item sync-token))))))))))
+  "Sync existing descendants of the heading at point using remote ITEMS.
+Only updates headings that already exist in the current subtree.  It
+does not insert missing remote items during single-heading sync."
+  (let* ((root-id (org-entry-get (point) "TODOIST_ID"))
+         (id-map (emacs-todoist--build-id-map-from-markers
+                  (emacs-todoist-org-synced-entries-in-subtree)))
+         ;; Keep parent handling in `emacs-todoist-sync-heading' so
+         ;; child updates happen before parent state transitions.
+         (child-items
+          (cl-remove-if
+           (lambda (item)
+             (equal (emacs-todoist--item-id item) root-id))
+           items))
+         ;; `sync-heading' should not materialize new remote tasks in the
+         ;; local outline.  Restrict to headings that already exist.
+         (existing-child-items
+          (cl-remove-if-not
+           (lambda (item)
+             (and-let* ((item-id (emacs-todoist--item-id item)))
+               (gethash item-id id-map)))
+           child-items)))
+    (emacs-todoist--apply-items
+     (emacs-todoist--topological-sort-items existing-child-items)
+     sync-token
+     id-map)))
 
 ;; ==============================================================================
 ;; Handle remote deletion
@@ -693,11 +1029,16 @@ Requires the heading to have a TODOIST_ID property."
 ;; Bulk sync core
 ;; ==============================================================================
 
-(defun emacs-todoist--sync-entries (linked-markers new-markers)
+(cl-defun emacs-todoist--sync-entries
+    (linked-markers new-markers &key post-classify-fn)
   "Sync LINKED-MARKERS (existing) and NEW-MARKERS (to push) with Todoist.
 LINKED-MARKERS are markers for headings that already have a TODOIST_ID.
 NEW-MARKERS are markers for headings without a TODOIST_ID to push as
 new tasks.  Both lists may be nil.
+
+POST-CLASSIFY-FN, when non-nil, is called after remote classification
+and child insertion but before push dispatch.  It receives a context
+plist and should return the number of additionally inserted headings.
 
 The flow:
 1. If NEW-MARKERS non-nil, ensure the project cache is populated.
@@ -706,24 +1047,29 @@ The flow:
 4. Build item_add commands for new headings.
 5. Send all push commands in a single API call.
 6. Write back IDs, hashes, and sync token."
-  (if (and (null linked-markers) (null new-markers))
+  (if (and (null linked-markers) (null new-markers) (null post-classify-fn))
       (message "emacs-todoist: no headings to sync")
     ;; Step 1: ensure project cache if we have new headings to push.
-    (let ((continue-fn
-           (lambda ()
-             (emacs-todoist--sync-entries-1 linked-markers new-markers))))
+    (let* ((origin-buffer (current-buffer))
+           (continue-fn
+            (lambda ()
+              (emacs-todoist--sync-entries-1
+               linked-markers new-markers
+               :post-classify-fn post-classify-fn
+               :target-buffer origin-buffer))))
       (if new-markers
           (emacs-todoist--ensure-projects continue-fn)
         (funcall continue-fn)))))
 
-(defun emacs-todoist--sync-entries-1 (linked-markers new-markers)
+(cl-defun emacs-todoist--sync-entries-1
+    (linked-markers new-markers &key post-classify-fn target-buffer)
   "Internal continuation for `emacs-todoist--sync-entries'.
 Called after project cache is ensured.  LINKED-MARKERS and NEW-MARKERS
-are as in the parent function."
-  (if (null linked-markers)
+are as in the parent function.  TARGET-BUFFER is the Org buffer that
+requested sync and is used for post-classification hooks."
+  (if (and (null linked-markers) (null post-classify-fn))
       ;; No linked headings — skip fetch, go straight to pushing new ones.
       (emacs-todoist--sync-entries-push nil nil new-markers nil)
-    ;; Determine the batch sync token.
     (let* ((tokens
             (mapcar (lambda (m)
                       (save-excursion
@@ -732,12 +1078,13 @@ are as in the parent function."
                           (or (org-entry-get (point) "TODOIST_SYNC_TOKEN") "*"))))
                     linked-markers))
            (batch-token
-            (if (cl-every (lambda (tok) (equal tok (car tokens))) tokens)
-                (car tokens)
-              "*")))
+            (if (null linked-markers)
+                "*"
+              (if (cl-every (lambda (tok) (equal tok (car tokens))) tokens)
+                  (car tokens)
+                "*"))))
       (emacs-todoist-log 'debug "Bulk fetch with token: %s (%d headings)"
                          batch-token (length linked-markers))
-      ;; Step 2: fetch remote items in one API call.
       (emacs-todoist-api-sync
        batch-token '("items") nil
        (lambda (response)
@@ -747,13 +1094,17 @@ are as in the parent function."
                                   (alist-get 'error response))
                (message "emacs-todoist: bulk fetch error"))
            (emacs-todoist--sync-entries-classify
-            linked-markers new-markers response batch-token)))))))
+            linked-markers new-markers response batch-token
+            :post-classify-fn post-classify-fn
+            :target-buffer target-buffer)))))))
 
-(defun emacs-todoist--sync-entries-classify
-    (linked-markers new-markers response batch-token)
+(cl-defun emacs-todoist--sync-entries-classify
+    (linked-markers new-markers response batch-token
+                    &key post-classify-fn target-buffer)
   "Classify linked headings and dispatch to push phase.
 RESPONSE is the parsed fetch response.  BATCH-TOKEN is the token used
-for the fetch (needed to detect deletions on full sync)."
+for the fetch (needed to detect deletions on full sync).  TARGET-BUFFER
+is where post-classification hooks run."
   (let* ((new-sync-token (alist-get 'sync_token response))
          (items          (alist-get 'items response))
          (push-commands  '())
@@ -815,21 +1166,56 @@ for the fetch (needed to detect deletions on full sync)."
                 (emacs-todoist-org-set-props
                  `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
                 (cl-incf skipped))))))))
+    ;; Step 4: apply remote items that are not yet represented by a
+    ;; linked marker.  In normal buffers this inserts only children
+    ;; whose parents already exist in the current tree.
+    (let* ((id-map (emacs-todoist--build-id-map-from-markers linked-markers))
+           (new-remote-items
+            (cl-remove-if
+             (lambda (item)
+               (and-let* ((item-id (emacs-todoist--item-id item)))
+                 (gethash item-id id-map)))
+             (or items '())))
+           (sorted-new-remote-items
+            (emacs-todoist--topological-sort-items new-remote-items))
+           (inserted-from-children
+            (emacs-todoist--apply-items
+             sorted-new-remote-items new-sync-token id-map))
+           (inserted-from-hook
+            (if post-classify-fn
+                (let ((hook-buffer (and (buffer-live-p target-buffer)
+                                        target-buffer)))
+                  (if hook-buffer
+                      (with-current-buffer hook-buffer
+                        (or (funcall post-classify-fn
+                                     (list :new-remote-items sorted-new-remote-items
+                                           :new-sync-token new-sync-token
+                                           :id-map id-map
+                                           :items items))
+                            0))
+                    (progn
+                      (emacs-todoist-log
+                       'warn "Skipping post-classify hook: target buffer is dead")
+                      0)))
+              0))
+           (inserted-total (+ inserted-from-children inserted-from-hook)))
     ;; All headings classified — proceed to push phase.
     (emacs-todoist--sync-entries-push
      push-commands (nreverse pushed-markers)
      new-markers new-sync-token
-     :pulled pulled :skipped skipped)))
+     :pulled pulled :skipped skipped :inserted inserted-total)))
+
+)
 
 (cl-defun emacs-todoist--sync-entries-push
     (push-commands pushed-markers new-markers sync-token
-     &key (pulled 0) (skipped 0))
+     &key (pulled 0) (skipped 0) (inserted 0))
   "Send batch push and new-heading commands, then write back results.
 PUSH-COMMANDS is a list of update/complete/uncomplete commands.
 PUSHED-MARKERS are the markers whose hashes need updating.
 NEW-MARKERS are markers for brand-new headings to push.
 SYNC-TOKEN is the token to use for this push call.
-PULLED and SKIPPED are counters for the summary message."
+PULLED, SKIPPED, and INSERTED are counters for the summary message."
   (let ((new-entries '())
         (all-commands (copy-sequence (or push-commands '()))))
     ;; Step 4: build item_add commands for each new heading.
@@ -858,10 +1244,12 @@ PULLED and SKIPPED are counters for the summary message."
     (if (null all-commands)
         ;; Nothing to push — report summary.
         (progn
-          (emacs-todoist-log 'info "Bulk sync: pulled %d, skipped %d, pushed 0"
-                             pulled skipped)
-          (message "emacs-todoist: synced (pulled %d, pushed 0, skipped %d)"
-                   pulled skipped))
+          (emacs-todoist-log
+           'info "Bulk sync: pulled %d, pushed 0, inserted %d, skipped %d"
+           pulled inserted skipped)
+          (message
+           "emacs-todoist: synced (pulled %d, pushed 0, inserted %d, skipped %d)"
+           pulled inserted skipped))
       ;; Step 5: send all commands in one API call.
       (emacs-todoist-api-sync
        (or sync-token "*") '("items") all-commands
@@ -878,10 +1266,10 @@ PULLED and SKIPPED are counters for the summary message."
           (t
            (emacs-todoist--sync-entries-writeback
             pushed-markers new-entries new-markers response
-            :pulled pulled :skipped skipped))))))))
+            :pulled pulled :skipped skipped :inserted inserted))))))))
 (cl-defun emacs-todoist--sync-entries-writeback
     (pushed-markers new-entries new-markers response
-     &key (pulled 0) (skipped 0))
+     &key (pulled 0) (skipped 0) (inserted 0))
   "Write back hashes and IDs after a successful bulk push.
 PUSHED-MARKERS are markers for updated headings (need hash refresh).
 NEW-ENTRIES is a list of (TEMP-ID . MARKER) for new headings.
@@ -901,15 +1289,18 @@ RESPONSE is the parsed API response."
              `(("TODOIST_LOCAL_HASH"  . ,local-hash)
                ("TODOIST_REMOTE_HASH" . ,remote-hash)
                ("TODOIST_SYNC_TOKEN"  . ,resp-token)))
+            (emacs-todoist--run-on-done-action marker)
             (cl-incf pushed-count)))))
     ;; Write IDs + hashes for new headings.
     (when new-entries
       (emacs-todoist--write-new-heading-props new-entries response)
       (cl-incf pushed-count (length new-markers)))
-    (emacs-todoist-log 'info "Bulk sync: pulled %d, pushed %d, skipped %d"
-                       pulled pushed-count skipped)
-    (message "emacs-todoist: synced (pulled %d, pushed %d, skipped %d)"
-             pulled pushed-count skipped)))
+    (emacs-todoist-log
+     'info "Bulk sync: pulled %d, pushed %d, inserted %d, skipped %d"
+     pulled pushed-count inserted skipped)
+    (message
+     "emacs-todoist: synced (pulled %d, pushed %d, inserted %d, skipped %d)"
+     pulled pushed-count inserted skipped)))
 
 ;; ==============================================================================
 ;; User-facing bulk sync commands

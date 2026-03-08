@@ -6,24 +6,29 @@ API v1.  **Not** v9 — we target the v1 endpoint at
 
 ## Architecture
 
-Three modules with strict dependency direction:
+Four modules with strict dependency direction:
 
 ```
-emacs-todoist.el  (integration: config, sync logic, interactive commands)
-  ├── emacs-todoist-org.el  (pure org-mode parsing/manipulation, no API)
-  └── emacs-todoist-api.el  (Todoist Sync API wrapper, no org dependency)
+emacs-todoist.el           (integration: config, core sync logic, interactive commands)
+  ├── emacs-todoist-org.el      (pure org-mode parsing/manipulation, no API)
+  ├── emacs-todoist-api.el      (Todoist Sync API wrapper, no org dependency)
+  └── emacs-todoist-frontend.el (ephemeral *Todoist* org buffer + incremental refresh)
 ```
 
-- **`emacs-todoist-org.el`** (322 lines) — Pure org-mode operations.
+- **`emacs-todoist-org.el`** (332 lines) — Pure org-mode operations.
   All functions assume point is on an org heading. No network calls.
   Testable in isolation.
-- **`emacs-todoist-api.el`** (251 lines) — Stateless Todoist Sync
+- **`emacs-todoist-api.el`** (296 lines) — Stateless Todoist Sync
   API v1 wrapper. Sync tokens passed in by callers, new tokens
   returned. Uses `url-retrieve` (built-in async). No org dependency.
-- **`emacs-todoist.el`** (944 lines) — Wires org + api together.
+- **`emacs-todoist.el`** (1213 lines) — Wires org + api together.
   All async logic uses callback chains since `url-retrieve` is async.
   Contains `defcustom` declarations, logging, project cache, sync
   logic, and all interactive commands.
+- **`emacs-todoist-frontend.el`** (208 lines) — UI/rendering module
+  for `emacs-todoist-open` and `emacs-todoist-frontend-sync`.
+  Renders all tasks in an ephemeral org buffer grouped by project and
+  applies incremental remote inserts/updates in-place.
 
 ### Module function map
 
@@ -79,6 +84,13 @@ emacs-todoist.el  (integration: config, sync logic, interactive commands)
 | `emacs-todoist-sync-buffer` | Sync all linked headings in buffer; with `C-u` also push new TODOs |
 | `emacs-todoist-sync-subtree` | Sync all linked headings in subtree; with `C-u` also push new TODOs |
 | `emacs-todoist-sync-region` | Sync all linked headings in region; with `C-u` also push new TODOs |
+
+**`emacs-todoist-frontend.el`** — frontend commands:
+
+| Command | Purpose |
+|---------|---------|
+| `emacs-todoist-open` | Create/recreate ephemeral `*Todoist*` org buffer from remote items |
+| `emacs-todoist-frontend-sync` | Incremental refresh for the frontend buffer using stored sync token |
 
 **`emacs-todoist.el`** — key internal functions:
 
@@ -177,10 +189,11 @@ emacs-todoist--sync-entries(linked-markers, new-markers)
 ## Testing
 
 ```sh
-make test              # All mock tests (120 tests)
+make test              # All non-live tests (141 tests)
 make test-org          # Only org module tests (45 tests)
-make test-api          # Only API tests (36 tests, mocked HTTP)
+make test-api          # Only API tests (37 tests, mocked HTTP)
 make test-integration  # Only integration tests (39 tests)
+make test-frontend     # Only frontend tests (20 tests)
 make test-live         # Live API tests (9 tests, requires token)
 
 # Filter by file and pattern:
@@ -191,12 +204,16 @@ make test FILE=test-org MATCH=description
 
 - **`tests/test-org.el`** (45 tests) — Unit tests for all
   `emacs-todoist-org-*` functions. Uses `with-org-buffer` helper.
-- **`tests/test-api.el`** (36 tests) — Unit tests for API command
+- **`tests/test-api.el`** (37 tests) — Unit tests for API command
   builders, parsing, and hashing. Mocks `url-retrieve` via `cl-letf`.
 - **`tests/test-integration.el`** (39 tests) — End-to-end sync
   logic. Mocks `emacs-todoist-api-sync` via `with-mock-sync`. Tests
   cover single heading sync, force push/pull, bulk sync, project
   resolution, deletion handling, parent/child cascading, logging.
+- **`tests/test-frontend.el`** (20 tests) — Frontend rendering and
+  incremental sync tests for `emacs-todoist-open` and
+  `emacs-todoist-frontend-sync`, including project grouping and
+  top-level insertion behavior.
 - **`tests/test-live.el`** (9 tests) — Real API calls, excluded
   from `make test`. See below.
 
@@ -220,6 +237,10 @@ API v1.  They are **excluded** from the default `make test` target
 
 **Setup**: place a valid Todoist API token in `.todoist_api_token` at
 the project root (this file is gitignored).
+
+**Codex note**: in restricted sandbox environments, `make test-live`
+may fail due to blocked network and must be rerun with elevated
+permissions.
 
 **How they work**:
 - `emacs-todoist-api-sync` (async via `url-retrieve`) is replaced at
@@ -249,6 +270,10 @@ the project root (this file is gitignored).
 - **Async callbacks**: All code after `emacs-todoist-api-sync` runs
   in a callback. Use `point-marker` before the async call to safely
   navigate back to the heading.
+- **Callback buffer context (critical)**: `url-retrieve` callbacks run
+  in a temporary HTTP response buffer, not your org buffer. Any org
+  edit, heading lookup, or frontend hook must wrap mutations in
+  `with-current-buffer` for the target org/frontend buffer first.
 - **ID type coercion**: Todoist returns numeric IDs, but org
   properties store them as strings. All ID comparisons use
   `(format "%s" ...)` on both sides to coerce to strings.
@@ -265,42 +290,44 @@ the project root (this file is gitignored).
   bulk, children whose parent is also being pushed are filtered out,
   since `emacs-todoist--build-new-heading-commands` already includes
   item_add commands for direct children.
+- **Marker stability for insert-heavy flows (critical)**: Any marker
+  used as a long-lived anchor in id/project maps must be created with
+  insertion-type `t` (`(copy-marker POS t)`). Otherwise top-level
+  insertions can leave anchors behind and cause incorrect parent/project
+  placement on subsequent inserts.
+- **HTTP body encoding (critical)**: `url-retrieve` request payloads
+  must be unibyte. JSON containing multibyte characters can trigger
+  `Multibyte text in HTTP request`. Encode sync payloads as ASCII-safe
+  JSON (`\uXXXX` escapes) and convert with `string-as-unibyte` before
+  calling `url-retrieve`.
 
 ## Implementation phases
 
 - [x] Phase 0: Dev tooling (Makefile, test runner)
 - [x] Phase 1: Org module (13 public functions, 45 tests)
-- [x] Phase 2: API module (14 public functions, 36 tests)
+- [x] Phase 2: API module (14 public functions, 37 tests)
 - [x] Phase 3: Integration layer — sync logic, logging, 39 tests
 - [x] Phase 4a: Bulk sync commands (`sync-buffer`, `sync-subtree`,
   `sync-region`) — done, 14 bulk-specific integration tests
-- [ ] Phase 4b: `emacs-todoist-open` frontend buffer
-- [ ] Phase 5: Polish (README.org, autoloads, package headers)
+- [x] Phase 4b: `emacs-todoist-open` frontend buffer + incremental
+  `emacs-todoist-frontend-sync` (20 tests)
+- [ ] Phase 5: Polish (README.org, package metadata cleanup)
 
-## Phase 4b: `emacs-todoist-open` frontend buffer (next up)
+## Current project snapshot (2026-03-08)
 
-1. Call `emacs-todoist-api-fetch-items` with `"*"` to get all tasks
-2. Create ephemeral `*Todoist*` buffer in `org-mode`
-3. Render each task as an org heading:
-   - TODO/DONE state from `checked`
-   - DEADLINE from `due.date`
-   - Description as body text
-   - All `TODOIST_*` properties set
-   - Sub-tasks nested as sub-headings
-4. Group top-level headings by project (as level-1 headings)
-5. Mark buffer as not visiting a file (ephemeral)
-6. All `emacs-todoist-sync-*` commands work in this buffer
-
-### Tests needed
-- Frontend: renders tasks correctly, groups by project
-- Frontend: sync commands work in the ephemeral buffer
+- Core non-live test suite: `141/141` passing.
+- Live API suite: `9/9` passing.
+- Frontend buffer is implemented and autoloaded from
+  `emacs-todoist.el`.
+- Recent regression classes now covered by tests:
+  - async callback buffer context for frontend post-classify hooks
+  - marker-anchor drift during top-level insertions
+  - non-ASCII payload encoding in Sync API requests
 
 ## Phase 5: Polish
 
-- Add `;;;###autoload` cookies to interactive commands
-- Package headers — partially done (Version, Package-Requires, URL
-  present in `emacs-todoist.el`; missing from sub-modules)
-- `README.org` with usage instructions
+- Package headers cleanup in sub-modules
+- `README.org` with usage/configuration and frontend workflow
 - Address items in `SESSION.md`
 
 ## Known future work (not MVP)

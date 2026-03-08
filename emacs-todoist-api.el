@@ -201,6 +201,29 @@ TODOIST_REMOTE_HASH stored alongside org headings."
     (sha1 (format "%S" (list content description due checked)))))
 
 ;; ==============================================================================
+;; JSON encoding helpers
+;; ==============================================================================
+
+(defun emacs-todoist-api--json-escape-non-ascii-char (char)
+  "Return JSON-safe ASCII escape for Unicode codepoint CHAR."
+  (if (<= char #xFFFF)
+      (format "\\u%04x" char)
+    (let* ((u (- char #x10000))
+           (hi (+ #xD800 (lsh u -10)))
+           (lo (+ #xDC00 (logand u #x3FF))))
+      (format "\\u%04x\\u%04x" hi lo))))
+
+(defun emacs-todoist-api--json-encode-ascii (obj)
+  "JSON encode OBJ and escape all non-ASCII chars as \\uXXXX."
+  (replace-regexp-in-string
+   "[^\0-\177]"
+   (lambda (s)
+     (emacs-todoist-api--json-escape-non-ascii-char
+      (string-to-char s)))
+   (json-encode obj)
+   t t))
+
+;; ==============================================================================
 ;; Core sync call
 ;; ==============================================================================
 
@@ -222,7 +245,12 @@ Uses `url-retrieve' for asynchronous HTTP."
          (body `((sync_token     . ,sync-token)
                  (resource_types . ,(vconcat resource-types))
                  (commands       . ,(vconcat (or commands [])))))
-         (url-request-data (encode-coding-string (json-encode body) 'utf-8)))
+         ;; `url-retrieve' can signal "Multibyte text in HTTP request" when
+         ;; payload text contains raw non-ASCII chars.  Keep the JSON
+         ;; payload ASCII-only (\uXXXX escapes), then pass unibyte bytes.
+         (url-request-data
+          (string-as-unibyte
+           (emacs-todoist-api--json-encode-ascii body))))
     (url-retrieve
      "https://api.todoist.com/api/v1/sync"
      (lambda (_status)

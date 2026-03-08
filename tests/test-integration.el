@@ -1152,4 +1152,117 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
       (should (equal "hash-c-remote" (org-entry-get (point) "TODOIST_REMOTE_HASH")))
       (should (equal "tok-0" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
 
+;; ==============================================================================
+;; Frontend usability polish
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/on-done-delete-properties-after-push ()
+  "DONE headings can clear Todoist properties after a successful push."
+  (with-org-buffer "* DONE Task\n"
+    (let ((emacs-todoist-on-done-action 'delete-properties))
+      (emacs-todoist-org-set-props
+       '(("TODOIST_ID" . "task-1")
+         ("TODOIST_LOCAL_HASH" . "stale")
+         ("TODOIST_REMOTE_HASH" . "remote-old")
+         ("TODOIST_SYNC_TOKEN" . "tok-0")))
+      (with-mock-sync nil
+        (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                   (lambda (_sync-token _resource-types commands callback)
+                     (if (null commands)
+                         (funcall callback
+                                  '((sync_token . "tok-fetch")
+                                    (items . nil)))
+                       (funcall callback
+                                '((sync_token . "tok-push")
+                                  (items . nil)))))))
+          (emacs-todoist-sync-heading)))
+      (should (equal "DONE" (org-get-todo-state)))
+      (should-not (org-entry-get (point) "TODOIST_ID"))
+      (should-not (org-entry-get (point) "TODOIST_LOCAL_HASH"))
+      (should-not (org-entry-get (point) "TODOIST_REMOTE_HASH"))
+      (should-not (org-entry-get (point) "TODOIST_SYNC_TOKEN")))))
+
+(ert-deftest emacs-todoist-integration/on-done-delete-heading-after-pull ()
+  "DONE headings can be deleted after a successful pull."
+  (with-org-buffer "* TODO Task\n"
+    (let* ((local-hash (emacs-todoist-org-heading-local-hash))
+           (remote-hash (emacs-todoist-api-hash-item
+                         '((content . "Task")
+                           (description . "")
+                           (due . nil)
+                           (checked . 0))))
+           (emacs-todoist-on-done-action 'delete-heading))
+      (emacs-todoist-org-set-props
+       `(("TODOIST_ID" . "task-1")
+         ("TODOIST_LOCAL_HASH" . ,local-hash)
+         ("TODOIST_REMOTE_HASH" . ,remote-hash)
+         ("TODOIST_SYNC_TOKEN" . "tok-0")))
+      (with-mock-sync
+          '((sync_token . "tok-1")
+            (items . (((id . "task-1")
+                       (content . "Task")
+                       (description . "")
+                       (project_id . "proj-1")
+                       (due . nil)
+                       (checked . 1)))))
+        (emacs-todoist-sync-heading))
+      (goto-char (point-min))
+      (should-not (re-search-forward "^\\*" nil t)))))
+
+(ert-deftest emacs-todoist-integration/auto-sync-on-todo-state-change ()
+  "Changing TODO state auto-syncs when `emacs-todoist-mode' is enabled."
+  (with-org-buffer "* TODO Task\n"
+    (let ((emacs-todoist-auto-sync-on-todo-change t)
+          (sync-call-count 0))
+      (emacs-todoist-org-set-props
+       '(("TODOIST_ID" . "task-1")
+         ("TODOIST_LOCAL_HASH" . "stale")
+         ("TODOIST_REMOTE_HASH" . "remote-old")
+         ("TODOIST_SYNC_TOKEN" . "tok-0")))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (cl-incf sync-call-count)
+                   (if (null commands)
+                       (funcall callback
+                                '((sync_token . "tok-fetch")
+                                  (items . nil)))
+                     (funcall callback
+                              '((sync_token . "tok-push")
+                                (items . nil)))))))
+        (emacs-todoist-mode 1)
+        (org-todo "DONE")
+        (should (= 2 sync-call-count))))))
+
+(ert-deftest emacs-todoist-integration/capture-relocates-to-frontend ()
+  "Capture finalize moves Todoist TODOs into frontend and syncs them."
+  (with-org-buffer
+      "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
+    (let ((org-capture-last-stored-marker (point-marker))
+          (emacs-todoist-capture-to-frontend t)
+          (captured-subtree nil)
+          (captured-project nil)
+          (sync-called nil)
+          (frontend-buf (generate-new-buffer " *et-capture*")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
+                     (lambda (subtree project-id &optional _project-name)
+                       (setq captured-subtree subtree
+                             captured-project project-id)
+                       (with-current-buffer frontend-buf
+                         (erase-buffer)
+                         (org-mode)
+                         (insert subtree)
+                         (goto-char (point-min))
+                         (point-marker))))
+                    ((symbol-function 'emacs-todoist-sync-heading)
+                     (lambda ()
+                       (setq sync-called t))))
+            (emacs-todoist--capture-after-finalize))
+        (kill-buffer frontend-buf))
+      (should sync-called)
+      (should (equal "proj-1" captured-project))
+      (should (string-match-p "^\\* TODO Captured" captured-subtree))
+      (goto-char (point-min))
+      (should-not (re-search-forward "^\\*" nil t)))))
+
 ;;; test-integration.el ends here

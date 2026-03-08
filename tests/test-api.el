@@ -340,6 +340,34 @@ instead of crashing."
     ;; The callback should have received an error alist, not a crash.
     (should (alist-get 'error callback-result))))
 
+(ert-deftest emacs-todoist-api-sync/escapes-non-ascii-request-body ()
+  "Sync request body is ASCII-only and escapes Unicode payload text."
+  (let* ((emacs-todoist-api-token "test-token")
+         (captured-data nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq captured-data url-request-data)
+                 (with-temp-buffer
+                   (insert "HTTP/1.1 200 OK\r\n")
+                   (insert "Content-Type: application/json\r\n")
+                   (insert "\r\n")
+                   (insert "{\"sync_token\":\"tok\",\"items\":[]}")
+                   (funcall callback nil)))))
+      (emacs-todoist-api-sync
+       "*" '("items")
+       '(((type . "item_update")
+          (uuid . "u-1")
+          (args . ((id . "task-1")
+                   (content . "über test")
+                   (description . "naïve")))))
+       #'ignore))
+    (should captured-data)
+    (should-not (multibyte-string-p captured-data))
+    (let ((payload (decode-coding-string captured-data 'utf-8)))
+      (should (string-match-p "\\\\u00fcber test" payload))
+      (should (string-match-p "na\\\\u00efve" payload))
+      (should-not (string-match-p "über test" payload)))))
+
 ;; ==============================================================================
 ;; fetch-items — convenience wrapper
 ;; ==============================================================================
