@@ -72,6 +72,9 @@
 (defvar emacs-todoist-frontend-mode nil
   "Non-nil in `*Todoist*' frontend buffers.")
 
+(defvar emacs-todoist-frontend-buffer-name "*Todoist*"
+  "Name of the Todoist frontend buffer.")
+
 (defvar emacs-todoist-mode nil
   "Non-nil when `emacs-todoist-mode' is enabled in the current buffer.")
 
@@ -167,6 +170,9 @@ After relocation, the captured heading is synced immediately."
 (defvar emacs-todoist--capture-relocation-in-progress nil
   "Internal guard to prevent nested capture relocation.")
 
+(defvar org-capture-last-stored-marker (make-marker)
+  "Marker to the most recently stored Org capture entry.")
+
 (defun emacs-todoist-log (level fmt &rest args)
   "Log a message at LEVEL using format string FMT and ARGS.
 Only logs when LEVEL >= `emacs-todoist-log-level'.  Messages are
@@ -233,6 +239,9 @@ when `emacs-todoist-auto-sync-on-todo-change' is non-nil."
 Returns non-nil when relocation+sync was performed."
   (when (and (markerp marker)
              (marker-buffer marker)
+             ;; Only route capture entries when frontend has already been
+             ;; opened/rendered in this session.
+             (get-buffer emacs-todoist-frontend-buffer-name)
              (not emacs-todoist--capture-relocation-in-progress))
     (with-current-buffer (marker-buffer marker)
       (save-excursion
@@ -258,14 +267,39 @@ Returns non-nil when relocation+sync was performed."
                     (emacs-todoist-sync-heading)))
                 t))))))))
 
+(defun emacs-todoist--capture-process-or-push (marker)
+  "Route capture at MARKER to frontend, or push in place when routing skips."
+  (when (and (markerp marker) (marker-buffer marker))
+    (unless (emacs-todoist--capture-process-marker marker)
+      (with-current-buffer (marker-buffer marker)
+        (save-excursion
+          (goto-char marker)
+          (when (and (org-at-heading-p) (org-get-todo-state))
+            (emacs-todoist-push-heading)))))))
+
+(defun emacs-todoist--capture-dispatch-finalize (marker)
+  "Dispatch finalize work for MARKER.
+In interactive sessions this is deferred to idle time to avoid mutating Org
+buffers while `org-capture-finalize' is still running internal change-tracking."
+  (when (and (markerp marker) (marker-buffer marker))
+    (let ((marker-copy (copy-marker marker t)))
+      (if noninteractive
+          (emacs-todoist--capture-process-or-push marker-copy)
+        (run-with-idle-timer
+         0 nil
+         (lambda (m)
+           (when (and (markerp m) (marker-buffer m))
+             (emacs-todoist--capture-process-or-push m)))
+         marker-copy)))))
+
 (defun emacs-todoist--capture-after-finalize ()
   "Compatibility finalize hook: process `org-capture-last-stored-marker'."
   (when (and emacs-todoist-capture-to-frontend
              (boundp 'org-capture-last-stored-marker)
              (markerp org-capture-last-stored-marker)
              (marker-buffer org-capture-last-stored-marker))
-    (emacs-todoist--capture-process-marker
-     (copy-marker org-capture-last-stored-marker t))))
+    (emacs-todoist--capture-dispatch-finalize
+     org-capture-last-stored-marker)))
 
 ;; ==============================================================================
 ;; Project cache

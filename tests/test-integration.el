@@ -1242,7 +1242,8 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
           (captured-subtree nil)
           (captured-project nil)
           (sync-called nil)
-          (frontend-buf (generate-new-buffer " *et-capture*")))
+          (frontend-buf (generate-new-buffer " *et-capture*"))
+          (opened-frontend (generate-new-buffer emacs-todoist-frontend-buffer-name)))
       (unwind-protect
           (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
                      (lambda (subtree project-id &optional _project-name)
@@ -1258,11 +1259,34 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
                      (lambda ()
                        (setq sync-called t))))
             (emacs-todoist--capture-after-finalize))
-        (kill-buffer frontend-buf))
+        (kill-buffer frontend-buf)
+        (when (buffer-live-p opened-frontend)
+          (kill-buffer opened-frontend)))
       (should sync-called)
       (should (equal "proj-1" captured-project))
       (should (string-match-p "^\\* TODO Captured" captured-subtree))
       (goto-char (point-min))
       (should-not (re-search-forward "^\\*" nil t)))))
+
+(ert-deftest emacs-todoist-integration/capture-without-open-frontend-stays-local ()
+  "When frontend was never opened, capture should be pushed in-place."
+  (with-org-buffer
+      "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
+    (let ((org-capture-last-stored-marker (point-marker))
+          (emacs-todoist-capture-to-frontend t)
+          (insert-called nil)
+          (push-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
+                 (lambda (&rest _args)
+                   (setq insert-called t)
+                   (error "Should not relocate capture without frontend buffer")))
+                ((symbol-function 'emacs-todoist-push-heading)
+                 (lambda ()
+                   (setq push-called t))))
+        (emacs-todoist--capture-after-finalize))
+      (should push-called)
+      (should-not insert-called)
+      (goto-char (point-min))
+      (should (re-search-forward "^\\* TODO Captured$" nil t)))))
 
 ;;; test-integration.el ends here

@@ -106,10 +106,15 @@ Only entries captured with this template trigger this hook behavior."
     (setq emacs-todoist-org-capture--marker nil)
     (when (and marker (not org-note-abort) (marker-buffer marker))
       (if emacs-todoist-org-capture-route-to-frontend
-          (unless (emacs-todoist--capture-process-marker marker)
-            ;; Fallback: still push the capture if frontend routing did not apply.
-            (emacs-todoist-org-capture--push-in-place marker))
-        (emacs-todoist-org-capture--push-in-place marker)))))
+          (emacs-todoist--capture-dispatch-finalize marker)
+        (if noninteractive
+            (emacs-todoist-org-capture--push-in-place marker)
+          ;; Avoid mutating org buffers while org-capture finalize internals run.
+          (run-with-idle-timer
+           0 nil
+           (lambda (m)
+             (emacs-todoist-org-capture--push-in-place m))
+           (copy-marker marker t)))))))
 
 (defun emacs-todoist-org-capture-template ()
   "Return the capture template definition for Todoist captures."
