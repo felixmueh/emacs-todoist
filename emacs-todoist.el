@@ -155,6 +155,11 @@ After relocation, the captured heading is synced immediately."
   :type 'boolean
   :group 'emacs-todoist)
 
+(defcustom emacs-todoist-frontend-sync-on-save nil
+  "When non-nil, saving the frontend Todoist buffer triggers a sync."
+  :type 'boolean
+  :group 'emacs-todoist)
+
 ;; ==============================================================================
 ;; Logging
 ;; ==============================================================================

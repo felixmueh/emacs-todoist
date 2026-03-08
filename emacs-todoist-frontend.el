@@ -29,6 +29,12 @@
 (defvar-local emacs-todoist--frontend-id-to-name nil
   "Hash table: project-id string to display name in frontend buffer.")
 
+(defvar-local emacs-todoist--frontend-sync-after-save-running nil
+  "Internal recursion guard for frontend sync-on-save.")
+
+(defvar-local emacs-todoist--frontend-suppress-sync-after-save nil
+  "Internal guard to suppress sync-on-save for programmatic saves.")
+
 (defun emacs-todoist--frontend-file-path ()
   "Return the absolute path for the frontend file-backed Org buffer."
   (let ((dir (if (and (stringp org-directory)
@@ -48,6 +54,21 @@
                 (overlay-get ov 'yas--field-overlay)
                 (overlay-get ov 'yas--snippet))
         (delete-overlay ov)))))
+
+(defun emacs-todoist--frontend-save-buffer ()
+  "Save current frontend buffer without triggering sync-on-save recursion."
+  (when buffer-file-name
+    (let ((emacs-todoist--frontend-suppress-sync-after-save t))
+      (save-buffer))))
+
+(defun emacs-todoist--frontend-maybe-sync-after-save ()
+  "Trigger frontend sync when save-based syncing is enabled."
+  (when (and emacs-todoist-frontend-mode
+             emacs-todoist-frontend-sync-on-save
+             (not emacs-todoist--frontend-suppress-sync-after-save)
+             (not emacs-todoist--frontend-sync-after-save-running))
+    (let ((emacs-todoist--frontend-sync-after-save-running t))
+      (emacs-todoist-frontend-sync))))
 
 (defun emacs-todoist--frontend-setup-buffer (&optional preserve-maps)
   "Initialize current buffer as a Todoist frontend buffer.
@@ -235,7 +256,12 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 (define-minor-mode emacs-todoist-frontend-mode
   "Minor mode for the file-backed frontend Todoist buffer."
   :lighter " Todoist"
-  :keymap emacs-todoist-frontend-mode-map)
+  :keymap emacs-todoist-frontend-mode-map
+  (if emacs-todoist-frontend-mode
+      (add-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
+                nil t)
+    (remove-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
+                 t)))
 
 ;;;###autoload
 (defun emacs-todoist-open ()
@@ -284,7 +310,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                     #'emacs-todoist--frontend-project-fn)
                    (emacs-todoist--apply-items nested-items sync-token id-map)
                    (goto-char (point-min))
-                   (save-buffer)
+                   (emacs-todoist--frontend-save-buffer)
                    (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
 ;;;###autoload
@@ -309,7 +335,7 @@ successful sync completion."
                 (when (buffer-live-p frontend-buf)
                   (with-current-buffer frontend-buf
                     (when buffer-file-name
-                      (save-buffer))))
+                      (emacs-todoist--frontend-save-buffer))))
                 (when done-fn
                   (funcall done-fn summary))))))
 
@@ -318,7 +344,7 @@ successful sync completion."
   (unless (and (stringp buffer-file-name)
                (file-exists-p buffer-file-name))
     (user-error "Frontend buffer is not visiting a file"))
-  (save-buffer)
+  (emacs-todoist--frontend-save-buffer)
   (let ((org-agenda-files (list buffer-file-name)))
     (org-agenda-list)))
 

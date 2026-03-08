@@ -405,6 +405,34 @@
           (should (re-search-forward "^\\*\\* TODO From Second Open$" nil t)))
         (should (>= calls 2))))))
 
+(ert-deftest emacs-todoist-frontend/sync-on-save-triggers-sync ()
+  "Saving frontend buffer triggers incremental sync when configured."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((sync-calls 0))
+      (with-current-buffer (emacs-todoist-frontend-ensure-buffer)
+        (erase-buffer)
+        (setq-local emacs-todoist-frontend-sync-on-save t)
+        (cl-letf (((symbol-function 'emacs-todoist-frontend-sync)
+                   (lambda (&optional _done-fn)
+                     (cl-incf sync-calls))))
+          (insert "* TODO Saved task\n")
+          (save-buffer)))
+      (should (= 1 sync-calls)))))
+
+(ert-deftest emacs-todoist-frontend/sync-on-save-suppressed-for-internal-save ()
+  "Programmatic frontend save helper should not trigger save-based sync."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((sync-calls 0))
+      (with-current-buffer (emacs-todoist-frontend-ensure-buffer)
+        (erase-buffer)
+        (setq-local emacs-todoist-frontend-sync-on-save t)
+        (cl-letf (((symbol-function 'emacs-todoist-frontend-sync)
+                   (lambda (&optional _done-fn)
+                     (cl-incf sync-calls))))
+          (insert "* TODO Internal save\n")
+          (emacs-todoist--frontend-save-buffer)))
+      (should (= 0 sync-calls)))))
+
 (ert-deftest emacs-todoist-frontend/renders-project-and-task-data ()
   "Frontend render writes project containers, task fields, and properties."
   (emacs-todoist-test-with-clean-frontend
