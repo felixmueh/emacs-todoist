@@ -1109,6 +1109,28 @@ cleared."
     (message
      "emacs-todoist: recurrence updated locally; run sync to validate with Todoist")))
 
+;;;###autoload
+(defun emacs-todoist-set-project (project)
+  "Set Todoist project override for the heading at point.
+PROJECT is stored in the `TODOIST_PROJECT' property.
+
+When PROJECT is empty (or whitespace), the project override is
+cleared."
+  (interactive
+   (progn
+     (org-back-to-heading t)
+     (list
+      (read-string
+       "Todoist project (name/ID, empty clears): "
+       (or (org-entry-get (point) "TODOIST_PROJECT") "")))))
+  (org-back-to-heading t)
+  (let ((normalized (string-trim (or project ""))))
+    (if (string-empty-p normalized)
+        (org-entry-delete (point) "TODOIST_PROJECT")
+      (org-entry-put (point) "TODOIST_PROJECT" normalized))
+    (message
+     "emacs-todoist: project updated locally; run sync to validate with Todoist")))
+
 ;; ==============================================================================
 ;; Bulk sync core
 ;; ==============================================================================

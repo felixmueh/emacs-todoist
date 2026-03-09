@@ -668,6 +668,41 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
       (should-not sync-called))))
 
 ;; ==============================================================================
+;; Project command
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-integration/set-project-updates-property ()
+  "set-project writes TODOIST_PROJECT on the current heading."
+  (with-org-buffer "* TODO Task\n"
+    (emacs-todoist-set-project "Inbox")
+    (should (equal "Inbox"
+                   (org-entry-get (point) "TODOIST_PROJECT")))))
+
+(ert-deftest emacs-todoist-integration/set-project-empty-clears-property ()
+  "Empty set-project input clears TODOIST_PROJECT."
+  (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_PROJECT: Inbox\n:END:\n"
+    (emacs-todoist-set-project "   ")
+    (should-not (org-entry-get (point) "TODOIST_PROJECT"))))
+
+(ert-deftest emacs-todoist-integration/set-project-linked-no-sync ()
+  "On linked headings, set-project does not auto-sync."
+  (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_ID: task-1\n:END:\n"
+    (let ((sync-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-sync-subtree)
+                 (lambda () (setq sync-called t))))
+        (emacs-todoist-set-project "Work"))
+      (should-not sync-called))))
+
+(ert-deftest emacs-todoist-integration/set-project-unlinked-no-sync ()
+  "On unlinked headings, set-project does not trigger sync."
+  (with-org-buffer "* TODO Task\n"
+    (let ((sync-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-sync-subtree)
+                 (lambda () (setq sync-called t))))
+        (emacs-todoist-set-project "Work"))
+      (should-not sync-called))))
+
+;; ==============================================================================
 ;; Force pull
 ;; ==============================================================================
 
