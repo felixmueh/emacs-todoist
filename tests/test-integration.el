@@ -482,6 +482,75 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
     (should (equal "newer-token"
                    (org-entry-get (point) "TODOIST_SYNC_TOKEN")))))
 
+(ert-deftest emacs-todoist-integration/full-sync-missing-done-heading-applies-done-action ()
+  "Full-sync missing DONE heading applies DONE action without deletion prompt."
+  (with-org-buffer "* DONE Completed task\n"
+    (emacs-todoist-org-set-props
+     '(("TODOIST_ID" . "task-42")
+       ("TODOIST_SYNC_TOKEN" . "*")))
+    (let ((deletion-prompted nil)
+          (emacs-todoist-on-done-action 'delete-properties))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            '((sync_token . "tok-1")
+                              (items . nil)))))
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars)
+                   (setq deletion-prompted t)
+                   ?k)))
+        (emacs-todoist-sync-single-heading))
+      (should-not deletion-prompted)
+      (should-not (org-entry-get (point) "TODOIST_ID"))
+      (should-not (org-entry-get (point) "TODOIST_SYNC_TOKEN")))))
+
+(ert-deftest emacs-todoist-integration/full-sync-missing-todo-heading-no-prompt ()
+  "Full-sync missing TODO heading marks DONE without prompting."
+  (with-org-buffer "* TODO Completed remotely\n"
+    (emacs-todoist-org-set-props
+     '(("TODOIST_ID" . "task-42")
+       ("TODOIST_SYNC_TOKEN" . "*")))
+    (let ((deletion-prompted nil)
+          (emacs-todoist-on-done-action nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            '((sync_token . "tok-1")
+                              (items . nil)))))
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars)
+                   (setq deletion-prompted t)
+                   ?k)))
+        (emacs-todoist-sync-single-heading))
+      (should-not deletion-prompted)
+      (should (equal "DONE" (org-get-todo-state)))
+      (should (equal "task-42" (org-entry-get (point) "TODOIST_ID")))
+      (should (equal "tok-1" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+(ert-deftest emacs-todoist-integration/sync-buffer-full-missing-done-heading-applies-done-action ()
+  "Bulk full sync missing DONE heading applies DONE action without prompt."
+  (with-org-buffer "* DONE Completed task\n"
+    (emacs-todoist-org-set-props
+     '(("TODOIST_ID" . "task-42")
+       ("TODOIST_SYNC_TOKEN" . "*")
+       ("TODOIST_LOCAL_HASH" . "h")
+       ("TODOIST_REMOTE_HASH" . "r")))
+    (let ((deletion-prompted nil)
+          (emacs-todoist-on-done-action 'delete-properties))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            '((sync_token . "tok-1")
+                              (items . nil)))))
+                ((symbol-function 'read-char-choice)
+                 (lambda (_prompt _chars)
+                   (setq deletion-prompted t)
+                   ?k)))
+        (emacs-todoist-sync-buffer))
+      (should-not deletion-prompted)
+      (should-not (org-entry-get (point) "TODOIST_ID"))
+      (should-not (org-entry-get (point) "TODOIST_SYNC_TOKEN")))))
+
 ;; ==============================================================================
 ;; Force push
 ;; ==============================================================================
@@ -1222,38 +1291,32 @@ defensive check that shouldn't happen in practice."
       (should (string-match-p "no headings" msg))
       (should (null (org-entry-get (point) "TODOIST_ID"))))))
 
-(ert-deftest emacs-todoist-integration/sync-buffer-deletion-on-full-sync ()
-  "On full sync, a missing task triggers deletion handling."
+(ert-deftest emacs-todoist-integration/sync-buffer-full-missing-item-treats-as-completion ()
+  "On full sync, missing tasks are treated as remote completion with no prompt."
   (with-org-buffer
-      (concat "* TODO Present task\n:PROPERTIES:\n:TODOIST_ID: t1\n"
-              ":TODOIST_SYNC_TOKEN: *\n:TODOIST_LOCAL_HASH: h\n"
-              ":TODOIST_REMOTE_HASH: r\n:END:\n"
-              "* TODO Deleted task\n:PROPERTIES:\n:TODOIST_ID: t2\n"
+      (concat "* TODO Deleted task\n:PROPERTIES:\n:TODOIST_ID: t2\n"
               ":TODOIST_SYNC_TOKEN: *\n:TODOIST_LOCAL_HASH: h\n"
               ":TODOIST_REMOTE_HASH: r\n:END:\n")
     (let ((emacs-todoist-log-level 'error)
-          (deletion-prompted nil))
+          (deletion-prompted nil)
+          (emacs-todoist-on-done-action 'delete-properties))
       (cl-letf (((symbol-function 'emacs-todoist-api-sync)
                  (lambda (_sync-token _resource-types _commands callback)
-                   ;; Full sync returns only t1, not t2.
                    (funcall callback
                             `((sync_token . "tok-del")
-                              (items . (((id . "t1")
-                                         (content . "Present task")
-                                         (description . "")
-                                         (due) (checked . 0))))))))
-                ;; Mock deletion handler to choose "keep & unlink".
+                              (items . nil)))))
                 ((symbol-function 'read-char-choice)
                  (lambda (_prompt _chars)
                    (setq deletion-prompted t)
                    ?k)))
         (emacs-todoist-sync-buffer))
-      ;; Should have prompted for the deleted task.
-      (should deletion-prompted)
-      ;; t2 should be unlinked (no TODOIST_ID).
+      ;; Missing remote item should not prompt.
+      (should-not deletion-prompted)
+      ;; t2 should be marked done and unlinked by done-action.
       (goto-char (point-min))
-      (re-search-forward "^\\* TODO Deleted")
+      (re-search-forward "^\\* DONE Deleted")
       (beginning-of-line)
+      (should (equal "DONE" (org-get-todo-state)))
       (should (null (org-entry-get (point) "TODOIST_ID"))))))
 
 (ert-deftest emacs-todoist-integration/sync-buffer-conflict-logs-both-versions ()

@@ -251,17 +251,9 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
           (emacs-todoist--apply-items sorted-items new-sync-token id-map)))
     (+ inserted-top-level inserted-nested)))
 
-(defvar emacs-todoist-frontend-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'emacs-todoist-frontend-sync)
-    (define-key map (kbd "A") #'emacs-todoist-frontend-agenda)
-    map)
-  "Keymap for `emacs-todoist-frontend-mode'.")
-
 (define-minor-mode emacs-todoist-frontend-mode
   "Minor mode for the file-backed frontend Todoist buffer."
   :lighter " Todoist"
-  :keymap emacs-todoist-frontend-mode-map
   (if emacs-todoist-frontend-mode
       (add-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
                 nil t)
@@ -319,7 +311,6 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                    (emacs-todoist--frontend-save-buffer)
                    (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
-;;;###autoload
 (defun emacs-todoist-frontend-sync (&optional done-fn)
   "Incrementally sync the current frontend buffer from Todoist.
 When DONE-FN is non-nil, call it with a sync summary plist after

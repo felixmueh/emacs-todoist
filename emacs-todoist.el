@@ -59,9 +59,6 @@
 (autoload 'emacs-todoist-open "emacs-todoist-frontend" nil t)
 
 ;;;###autoload
-(autoload 'emacs-todoist-frontend-sync "emacs-todoist-frontend" nil t)
-
-;;;###autoload
 (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
 
 (autoload 'emacs-todoist-org-capture-install-template
@@ -743,7 +740,6 @@ Assumes the project cache is already populated.  Called by
   (let* ((result  (emacs-todoist--build-new-heading-commands))
          (commands (car result))
          (entries  (cdr result))
-         (marker   (cdar entries))  ;; first entry is the parent
          (title    (emacs-todoist-org-heading-title)))
 
     (emacs-todoist-log 'info "Pushing new heading: %s" title)
@@ -939,34 +935,23 @@ When SILENT is non-nil, suppress user-facing log/message chatter."
       (emacs-todoist-log 'info "Pulled remote changes for: %s" title)
       (message "emacs-todoist: pulled remote changes for \"%s\"" title))))
 
-(defun emacs-todoist--handle-deletion ()
-  "Handle a task that was deleted on Todoist.
-Prompts the user with three choices:
-  1. Delete the local heading
-  2. Re-push as a new task (removes TODOIST_ID, calls push-new)
-  3. Keep local heading and unlink (removes all TODOIST_* properties)"
+(defun emacs-todoist--handle-deletion (&optional sync-token)
+  "Handle a task missing from a full Todoist fetch.
+Treats the missing item as a remote completion and applies
+`emacs-todoist-on-done-action' without prompting.
+
+When SYNC-TOKEN is non-nil, write it before running DONE action."
   (let ((title (emacs-todoist-org-heading-title))
-        (choice (read-char-choice
-                 (format "Task \"%s\" deleted on Todoist. [d]elete local, [r]e-push, [k]eep & unlink? "
-                         (emacs-todoist-org-heading-title))
-                 '(?d ?r ?k))))
-    (pcase choice
-      (?d
-       ;; Delete the entire org subtree.
-       (org-back-to-heading t)
-       (org-cut-subtree)
-       (emacs-todoist-log 'info "Deleted local heading: %s" title)
-       (message "emacs-todoist: deleted local heading \"%s\"" title))
-      (?r
-       ;; Remove the old TODOIST_ID and re-push as a brand new task.
-       (emacs-todoist--delete-sync-state-properties)
-       (emacs-todoist-log 'info "Re-pushing as new task: %s" title)
-       (emacs-todoist--push-new-heading))
-      (?k
-       ;; Unlink: remove all Todoist properties but keep the heading.
-       (emacs-todoist--delete-todoist-properties)
-       (emacs-todoist-log 'info "Unlinked heading: %s" title)
-       (message "emacs-todoist: unlinked \"%s\" from Todoist" title)))))
+        (marker (point-marker)))
+    (unless (equal (org-get-todo-state) "DONE")
+      (emacs-todoist-set-todo-state "DONE"))
+    (when sync-token
+      (emacs-todoist-org-set-props
+       `(("TODOIST_SYNC_TOKEN" . ,sync-token))))
+    (emacs-todoist-log
+     'info "Remote item missing; treating as completed and applying done action: %s"
+     title)
+    (emacs-todoist--run-on-done-action marker)))
 
 ;; ==============================================================================
 ;; User-facing smart sync commands
@@ -1038,7 +1023,7 @@ push/pull/conflict handler."
                               (emacs-todoist--apply-pull
                                remote-item new-sync-token))))))
                      (if (equal fetch-token "*")
-                         (emacs-todoist--handle-deletion)
+                         (emacs-todoist--handle-deletion new-sync-token)
                        (if local-changed
                            (emacs-todoist--push-update
                             todoist-id stored-sync-token new-sync-token)
@@ -1071,7 +1056,6 @@ Requires the heading to have a TODOIST_ID property."
   (org-back-to-heading t)
   (let* ((props      (emacs-todoist-org-heading-props))
          (todoist-id (alist-get "TODOIST_ID" props nil nil #'equal))
-         (sync-token (alist-get "TODOIST_SYNC_TOKEN" props nil nil #'equal))
          (marker     (point-marker)))
     (unless todoist-id
       (user-error "No TODOIST_ID on this heading; nothing to pull"))
@@ -1091,9 +1075,9 @@ Requires the heading to have a TODOIST_ID property."
            (with-current-buffer (marker-buffer marker)
              (save-excursion
                (goto-char marker)
-               (if remote-item
-                   (emacs-todoist--apply-pull remote-item new-sync-token)
-                 (emacs-todoist--handle-deletion))))))))))
+                 (if remote-item
+                     (emacs-todoist--apply-pull remote-item new-sync-token)
+                   (emacs-todoist--handle-deletion new-sync-token))))))))))
 
 ;;;###autoload
 (defun emacs-todoist-set-recurrence (due-string)
@@ -1283,7 +1267,7 @@ is where post-classification hooks run."
                           (cl-incf pulled))))))))
              ;; Task not found + full sync → deleted remotely.
              ((equal batch-token "*")
-              (emacs-todoist--handle-deletion))
+              (emacs-todoist--handle-deletion new-sync-token))
              ;; Task not found + incremental → unchanged remotely.
              (t
               (if local-changed
