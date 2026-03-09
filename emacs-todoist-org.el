@@ -358,20 +358,27 @@ Preserves the property drawer, planning lines, and child headings."
 
 (defun emacs-todoist-org-resolve-project ()
   "Determine the Todoist project for the heading at point.
-Checks three sources in order, returning the first non-nil value:
+Checks four sources in order, returning the first non-nil value:
   1. The heading's TODOIST_PROJECT property
-  2. The file-level #+TODOIST_PROJECT: keyword
-  3. The `emacs-todoist-default-project' variable"
+  2. The nearest ancestor heading's TODOIST_PROJECT property
+  3. The file-level #+TODOIST_PROJECT: keyword
+  4. The `emacs-todoist-default-project' variable"
   (or
    ;; 1. Heading property
    (org-entry-get (point) "TODOIST_PROJECT")
-   ;; 2. File-level keyword (#+TODOIST_PROJECT: value)
+   ;; 2. Nearest ancestor heading property.
+   (save-excursion
+     (let (project)
+       (while (and (not project) (org-up-heading-safe))
+         (setq project (org-entry-get (point) "TODOIST_PROJECT")))
+       project))
+   ;; 3. File-level keyword (#+TODOIST_PROJECT: value)
    (save-excursion
      (goto-char (point-min))
      (when (re-search-forward
             "^#\\+TODOIST_PROJECT:[ \t]+\\(.+\\)" nil t)
        (string-trim (match-string-no-properties 1))))
-   ;; 3. Global default
+   ;; 4. Global default
    emacs-todoist-default-project))
 
 ;; ==============================================================================

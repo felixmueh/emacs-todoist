@@ -949,6 +949,39 @@ defensive check that shouldn't happen in practice."
         ;; TODOIST_ID should have been written back.
         (should (equal "real-id-42" (org-entry-get (point) "TODOIST_ID")))))))
 
+(ert-deftest emacs-todoist-integration/child-inherits-parent-project-property ()
+  "A child TODO inherits TODOIST_PROJECT from ancestor headings when absent locally."
+  (with-org-buffer
+      (concat "* Parent\n"
+              ":PROPERTIES:\n:TODOIST_PROJECT: Agenda\n:END:\n"
+              "** TODO Child task\n")
+    (let ((emacs-todoist-default-project "Inbox")
+          (emacs-todoist--project-cache '(("agenda" . "2349578432")
+                                          ("inbox" . "1111111111")))
+          (emacs-todoist-log-level 'error)
+          (sync-calls nil))
+      (goto-char (point-min))
+      (re-search-forward "^\\*\\* TODO Child task")
+      (beginning-of-line)
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (push commands sync-calls)
+                   (let* ((cmd (car commands))
+                          (temp-id (alist-get 'temp_id cmd)))
+                     (funcall callback
+                              `((sync_token . "tok-inherit")
+                                (temp_id_mapping . ((,temp-id . "real-child-1")))
+                                (items . nil)))))))
+        (emacs-todoist-sync-single-heading))
+
+      (let* ((commands (car sync-calls))
+             (cmd (car commands))
+             (args (alist-get 'args cmd)))
+        (should (equal "item_add" (alist-get 'type cmd)))
+        (should (equal "2349578432" (alist-get 'project_id args))))
+
+      (should (equal "real-child-1" (org-entry-get (point) "TODOIST_ID"))))))
+
 (ert-deftest emacs-todoist-integration/numeric-project-id-passes-through ()
   "A project string that looks like a numeric ID passes through unchanged."
   (with-org-buffer "* TODO Buy groceries\n"

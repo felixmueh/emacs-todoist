@@ -409,6 +409,19 @@ Point is placed at the first heading."
     (let ((emacs-todoist-default-project "DefaultProject"))
       (should (equal (emacs-todoist-org-resolve-project) "FileProject")))))
 
+(ert-deftest emacs-todoist-org-resolve-project-nearest-ancestor-property ()
+  "Nearest ancestor TODOIST_PROJECT is used before file/default values."
+  (with-org-buffer
+      (concat "#+TODOIST_PROJECT: FileProject\n"
+              "* Parent\n"
+              ":PROPERTIES:\n:TODOIST_PROJECT: ParentProject\n:END:\n"
+              "** TODO Child\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\* TODO Child")
+    (beginning-of-line)
+    (let ((emacs-todoist-default-project "DefaultProject"))
+      (should (equal (emacs-todoist-org-resolve-project) "ParentProject")))))
+
 (ert-deftest emacs-todoist-org-resolve-project-default ()
   "Global default is used when no other source is available."
   (with-org-buffer "* A heading\n"
