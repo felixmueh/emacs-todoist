@@ -676,6 +676,13 @@ and ENTRIES is a list of (TEMP-ID . MARKER) pairs for writeback."
          (due-date (alist-get 'deadline data))
          (due-string (alist-get 'due-string data))
          (proj   (emacs-todoist--resolve-project-id (alist-get 'project data)))
+         ;; New headings inserted under already-synced parents must carry
+         ;; parent_id, otherwise they become top-level tasks in Todoist.
+         (existing-parent-id
+          (save-excursion
+            (org-back-to-heading t)
+            (when (org-up-heading-safe)
+              (org-entry-get (point) "TODOIST_ID"))))
          (parent-temp-id (emacs-todoist-api-generate-uuid))
          (commands '())
          (entries (list (cons parent-temp-id (point-marker)))))
@@ -686,7 +693,8 @@ and ENTRIES is a list of (TEMP-ID . MARKER) pairs for writeback."
            :description (unless (string-empty-p desc) desc)
            :due-date due-date
            :due-string due-string
-           :project-id proj
+           :project-id (unless existing-parent-id proj)
+           :parent-id existing-parent-id
            :temp-id parent-temp-id)
           commands)
 
