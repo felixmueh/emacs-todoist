@@ -3,6 +3,8 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-todoist)
+(require 'emacs-todoist-frontend)
+(require 'emacs-todoist-org-capture)
 
 ;; ==============================================================================
 ;; Test helpers
@@ -1540,31 +1542,42 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
   "Capture finalize moves Todoist TODOs into frontend and syncs them."
   (with-org-buffer
       "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
-    (let ((org-capture-last-stored-marker (point-marker))
-          (emacs-todoist-capture-to-frontend t)
+    (let ((emacs-todoist-org-capture--marker (point-marker))
           (captured-subtree nil)
           (captured-project nil)
           (sync-called nil)
+          (org-directory (make-temp-file "et-org-" t))
           (frontend-buf (generate-new-buffer " *et-capture*"))
-          (opened-frontend (generate-new-buffer emacs-todoist-frontend-buffer-name)))
+          (opened-frontend nil))
       (unwind-protect
-          (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
-                     (lambda (subtree project-id &optional _project-name)
-                       (setq captured-subtree subtree
-                             captured-project project-id)
-                       (with-current-buffer frontend-buf
-                         (erase-buffer)
-                         (org-mode)
-                         (insert subtree)
-                         (goto-char (point-min))
-                         (point-marker))))
-                    ((symbol-function 'emacs-todoist-sync-heading)
-                     (lambda ()
-                       (setq sync-called t))))
-            (emacs-todoist--capture-after-finalize))
+          (progn
+            (setq opened-frontend
+                  (find-file-noselect
+                   (expand-file-name emacs-todoist-frontend-buffer-name
+                                     org-directory)))
+            (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
+                       (lambda (subtree project-id &optional _project-name)
+                         (setq captured-subtree subtree
+                               captured-project project-id)
+                         (with-current-buffer frontend-buf
+                           (erase-buffer)
+                           (org-mode)
+                           (insert subtree)
+                           (goto-char (point-min))
+                           (point-marker))))
+                      ((symbol-function 'emacs-todoist-sync-heading)
+                       (lambda ()
+                         (setq sync-called t))))
+              (emacs-todoist-org-capture-after-finalize)))
         (kill-buffer frontend-buf)
         (when (buffer-live-p opened-frontend)
-          (kill-buffer opened-frontend)))
+          (let ((file (with-current-buffer opened-frontend
+                        buffer-file-name)))
+            (kill-buffer opened-frontend)
+            (when (and file (file-exists-p file))
+              (delete-file file))))
+        (when (file-directory-p org-directory)
+          (delete-directory org-directory t)))
       (should sync-called)
       (should (equal "proj-1" captured-project))
       (should (string-match-p "^\\* TODO Captured" captured-subtree))
@@ -1576,25 +1589,24 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
   (with-org-buffer "* TODO Captured\n"
     (let ((noninteractive nil)
           (processed-marker nil))
-      (setq emacs-todoist--capture-deferred-thunks nil)
-      (remove-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)
+      (setq emacs-todoist-org-capture--deferred-thunks nil)
+      (remove-hook 'post-command-hook #'emacs-todoist-org-capture--flush-deferred)
       (unwind-protect
-          (cl-letf (((symbol-function 'emacs-todoist--capture-process-or-push)
+          (cl-letf (((symbol-function 'emacs-todoist-org-capture--process-or-push)
                      (lambda (marker)
                        (setq processed-marker marker))))
-            (emacs-todoist--capture-dispatch-finalize (point-marker))
+            (emacs-todoist-org-capture--dispatch-finalize (point-marker))
             (should-not processed-marker)
-            (emacs-todoist--capture-flush-deferred)
+            (emacs-todoist-org-capture--flush-deferred)
             (should (markerp processed-marker)))
-        (setq emacs-todoist--capture-deferred-thunks nil)
-        (remove-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)))))
+        (setq emacs-todoist-org-capture--deferred-thunks nil)
+        (remove-hook 'post-command-hook #'emacs-todoist-org-capture--flush-deferred)))))
 
 (ert-deftest emacs-todoist-integration/capture-without-open-frontend-stays-local ()
   "When frontend was never opened, capture should be pushed in-place."
   (with-org-buffer
       "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
-    (let ((org-capture-last-stored-marker (point-marker))
-          (emacs-todoist-capture-to-frontend t)
+    (let ((emacs-todoist-org-capture--marker (point-marker))
           (insert-called nil)
           (push-called nil))
       (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
@@ -1604,7 +1616,7 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
                 ((symbol-function 'emacs-todoist-push-heading)
                  (lambda ()
                    (setq push-called t))))
-        (emacs-todoist--capture-after-finalize))
+        (emacs-todoist-org-capture-after-finalize))
       (should push-called)
       (should-not insert-called)
       (goto-char (point-min))
@@ -1614,22 +1626,33 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
   "Failed frontend insertion keeps the local heading and falls back to push."
   (with-org-buffer
       "* TODO Captured\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\nBody.\n"
-    (let ((org-capture-last-stored-marker (point-marker))
-          (emacs-todoist-capture-to-frontend t)
+    (let ((emacs-todoist-org-capture--marker (point-marker))
           (insert-called nil)
           (push-called nil)
-          (opened-frontend (generate-new-buffer emacs-todoist-frontend-buffer-name)))
+          (org-directory (make-temp-file "et-org-" t))
+          (opened-frontend nil))
       (unwind-protect
-          (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
-                     (lambda (&rest _args)
-                       (setq insert-called t)
-                       nil))
-                    ((symbol-function 'emacs-todoist-push-heading)
-                     (lambda ()
-                       (setq push-called t))))
-            (emacs-todoist--capture-after-finalize))
+          (progn
+            (setq opened-frontend
+                  (find-file-noselect
+                   (expand-file-name emacs-todoist-frontend-buffer-name
+                                     org-directory)))
+            (cl-letf (((symbol-function 'emacs-todoist-frontend-insert-captured-subtree)
+                       (lambda (&rest _args)
+                         (setq insert-called t)
+                         nil))
+                      ((symbol-function 'emacs-todoist-push-heading)
+                       (lambda ()
+                         (setq push-called t))))
+              (emacs-todoist-org-capture-after-finalize)))
         (when (buffer-live-p opened-frontend)
-          (kill-buffer opened-frontend)))
+          (let ((file (with-current-buffer opened-frontend
+                        buffer-file-name)))
+            (kill-buffer opened-frontend)
+            (when (and file (file-exists-p file))
+              (delete-file file))))
+        (when (file-directory-p org-directory)
+          (delete-directory org-directory t)))
       (should insert-called)
       (should push-called)
       (goto-char (point-min))

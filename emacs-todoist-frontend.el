@@ -20,8 +20,10 @@
 (require 'cl-lib)
 (require 'emacs-todoist)
 
-(defvar emacs-todoist-frontend-buffer-name nil
-  "Name of the Todoist frontend buffer.")
+(defcustom emacs-todoist-frontend-buffer-name "todoist.org"
+  "Name of the file-backed Todoist frontend Org buffer."
+  :type 'string
+  :group 'emacs-todoist)
 
 (defvar-local emacs-todoist--frontend-project-map nil
   "Hash table: project-id string to project heading marker in frontend buffer.")

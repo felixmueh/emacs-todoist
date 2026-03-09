@@ -63,20 +63,11 @@
 ;;;###autoload
 (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
 
-(autoload 'emacs-todoist-frontend-insert-captured-subtree
-  "emacs-todoist-frontend" nil nil)
-
 (autoload 'emacs-todoist-org-capture-install-template
   "emacs-todoist-org-capture" nil t)
 
 (autoload 'emacs-todoist-org-capture
   "emacs-todoist-org-capture" nil t)
-
-(defvar emacs-todoist-frontend-mode nil
-  "Non-nil in frontend Todoist buffers.")
-
-(defvar emacs-todoist-frontend-buffer-name "todoist.org"
-  "Name of the Todoist frontend buffer.")
 
 (defvar emacs-todoist-mode nil
   "Non-nil when `emacs-todoist-mode' is enabled in the current buffer.")
@@ -149,12 +140,6 @@ When this variable is buffer-local, it overrides
   :type 'boolean
   :group 'emacs-todoist)
 
-(defcustom emacs-todoist-capture-to-frontend t
-  "When non-nil, Todoist captures are moved to the frontend Todoist buffer.
-After relocation, the captured heading is synced immediately."
-  :type 'boolean
-  :group 'emacs-todoist)
-
 (defcustom emacs-todoist-frontend-sync-on-save nil
   "When non-nil, saving the frontend Todoist buffer triggers a sync."
   :type 'boolean
@@ -178,15 +163,6 @@ After relocation, the captured heading is synced immediately."
 
 (defvar emacs-todoist--auto-sync-in-progress nil
   "Non-nil while `emacs-todoist-mode' is processing an auto-sync hook.")
-
-(defvar emacs-todoist--capture-relocation-in-progress nil
-  "Internal guard to prevent nested capture relocation.")
-
-(defvar emacs-todoist--capture-deferred-thunks nil
-  "Queue of thunks scheduled to run after the current command.")
-
-(defvar org-capture-last-stored-marker (make-marker)
-  "Marker to the most recently stored Org capture entry.")
 
 (defun emacs-todoist-log (level fmt &rest args)
   "Log a message at LEVEL using format string FMT and ARGS.
@@ -262,91 +238,6 @@ when `emacs-todoist-auto-sync-on-todo-change' is non-nil."
                 #'emacs-todoist--auto-sync-todo-state-change nil t)
     (remove-hook 'org-after-todo-state-change-hook
                  #'emacs-todoist--auto-sync-todo-state-change t)))
-
-(defun emacs-todoist--capture-flush-deferred ()
-  "Run queued capture thunks and clear the queue."
-  (remove-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)
-  (let ((thunks (nreverse emacs-todoist--capture-deferred-thunks)))
-    (setq emacs-todoist--capture-deferred-thunks nil)
-    (dolist (thunk thunks)
-      (condition-case err
-          (funcall thunk)
-        (error
-         (emacs-todoist-log 'error "Deferred capture action failed: %S" err))))))
-
-(defun emacs-todoist--capture-defer (thunk)
-  "Run THUNK after the current command in interactive sessions."
-  (if noninteractive
-      (funcall thunk)
-    (push thunk emacs-todoist--capture-deferred-thunks)
-    (add-hook 'post-command-hook #'emacs-todoist--capture-flush-deferred)))
-
-(defun emacs-todoist--capture-process-marker (marker)
-  "Move capture entry at MARKER into frontend and sync it.
-Returns non-nil when relocation+sync was performed."
-  (when (and (markerp marker)
-             (marker-buffer marker)
-             ;; Only route capture entries when frontend has already been
-             ;; opened/rendered in this session.
-             (or (get-buffer emacs-todoist-frontend-buffer-name)
-                 (and (fboundp 'emacs-todoist--frontend-file-path)
-                      (get-file-buffer (emacs-todoist--frontend-file-path))))
-             (not emacs-todoist--capture-relocation-in-progress))
-    (with-current-buffer (marker-buffer marker)
-      (save-excursion
-        (goto-char marker)
-        (when (and (org-at-heading-p)
-                   (org-get-todo-state)
-                   (not (bound-and-true-p emacs-todoist-frontend-mode)))
-          (when-let* ((project (emacs-todoist-org-resolve-project)))
-            (let* ((beg (point))
-                   (end (save-excursion (org-end-of-subtree t t) (point)))
-                   (subtree (buffer-substring-no-properties beg end))
-                   (project-id (emacs-todoist--resolve-project-id project))
-                   (emacs-todoist--capture-relocation-in-progress t))
-              (unless (fboundp 'emacs-todoist-frontend-insert-captured-subtree)
-                (require 'emacs-todoist-frontend))
-              (when-let* ((frontend-marker
-                           (emacs-todoist-frontend-insert-captured-subtree
-                            subtree project-id project)))
-                ;; Delete local only after frontend insert succeeded to avoid
-                ;; dropping captured tasks on insertion failures.
-                (delete-region beg end)
-                (with-current-buffer (marker-buffer frontend-marker)
-                  (save-excursion
-                    (goto-char frontend-marker)
-                    (emacs-todoist-sync-heading)))
-                t))))))))
-
-(defun emacs-todoist--capture-process-or-push (marker)
-  "Route capture at MARKER to frontend, or push in place when routing skips."
-  (when (and (markerp marker) (marker-buffer marker))
-    (unless (emacs-todoist--capture-process-marker marker)
-      (with-current-buffer (marker-buffer marker)
-        (save-excursion
-          (goto-char marker)
-          (when (and (org-at-heading-p) (org-get-todo-state))
-            (emacs-todoist-push-heading)))))))
-
-(defun emacs-todoist--capture-dispatch-finalize (marker)
-  "Dispatch finalize work for MARKER.
-In interactive sessions this is deferred to the next command loop to avoid mutating Org
-buffers while `org-capture-finalize' is still running internal change-tracking."
-  (when (and (markerp marker) (marker-buffer marker))
-    (let ((marker-copy (copy-marker marker t)))
-      (emacs-todoist--capture-defer
-       (lambda ()
-         (when (and (markerp marker-copy) (marker-buffer marker-copy))
-           (emacs-todoist--capture-process-or-push marker-copy)))))))
-
-(defun emacs-todoist--capture-after-finalize ()
-  "Compatibility finalize hook: process `org-capture-last-stored-marker'."
-  (when (and emacs-todoist-capture-to-frontend
-             (boundp 'org-capture-last-stored-marker)
-             (markerp org-capture-last-stored-marker)
-             (marker-buffer org-capture-last-stored-marker))
-    (emacs-todoist--capture-dispatch-finalize
-     org-capture-last-stored-marker)))
 
 ;; ==============================================================================
 ;; Project cache
