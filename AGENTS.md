@@ -6,29 +6,31 @@ API v1.  **Not** v9 — we target the v1 endpoint at
 
 ## Architecture
 
-Four modules with strict dependency direction:
+Five modules with strict dependency direction:
 
 ```
 emacs-todoist.el           (integration: config, core sync logic, interactive commands)
   ├── emacs-todoist-org.el      (pure org-mode parsing/manipulation, no API)
   ├── emacs-todoist-api.el      (Todoist Sync API wrapper, no org dependency)
-  └── emacs-todoist-frontend.el (ephemeral *Todoist* org buffer + incremental refresh)
+  ├── emacs-todoist-frontend.el (file-backed Todoist org buffer + incremental refresh)
+  └── emacs-todoist-org-capture.el (Todoist-specific capture template + finalize hooks)
 ```
 
-- **`emacs-todoist-org.el`** (332 lines) — Pure org-mode operations.
-  All functions assume point is on an org heading. No network calls.
-  Testable in isolation.
-- **`emacs-todoist-api.el`** (296 lines) — Stateless Todoist Sync
-  API v1 wrapper. Sync tokens passed in by callers, new tokens
-  returned. Uses `url-retrieve` (built-in async). No org dependency.
-- **`emacs-todoist.el`** (1213 lines) — Wires org + api together.
-  All async logic uses callback chains since `url-retrieve` is async.
-  Contains `defcustom` declarations, logging, project cache, sync
-  logic, and all interactive commands.
-- **`emacs-todoist-frontend.el`** (208 lines) — UI/rendering module
-  for `emacs-todoist-open` and `emacs-todoist-frontend-sync`.
-  Renders all tasks in an ephemeral org buffer grouped by project and
-  applies incremental remote inserts/updates in-place.
+- **`emacs-todoist-org.el`** — Pure org-mode operations. All functions
+  assume point is on an org heading. No network calls. Testable in isolation.
+- **`emacs-todoist-api.el`** — Stateless Todoist Sync API v1 wrapper.
+  Sync tokens passed in by callers, new tokens returned. Uses
+  `url-retrieve` (built-in async). No org dependency.
+- **`emacs-todoist.el`** — Wires org + api together. All async logic
+  uses callback chains since `url-retrieve` is async. Contains
+  `defcustom` declarations, logging, project cache, sync logic, and
+  interactive commands.
+- **`emacs-todoist-frontend.el`** — UI/rendering module for
+  `emacs-todoist-open` and `emacs-todoist-frontend-sync`. Renders all
+  tasks into a file-backed org buffer grouped by project and applies
+  incremental remote inserts/updates in-place.
+- **`emacs-todoist-org-capture.el`** — Dedicated Todoist capture
+  template module. Owns capture-template installation and finalize hooks.
 
 ### Module function map
 
@@ -42,7 +44,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-org-heading-todo-state` | TODO state string or nil |
 | `emacs-todoist-org-heading-props` | Alist of all TODOIST_* properties |
 | `emacs-todoist-org-set-props` | Write alist of TODOIST_* properties |
-| `emacs-todoist-org-heading-local-hash` | SHA-1 of (title, deadline, desc, state) |
+| `emacs-todoist-org-heading-local-hash` | SHA-1 of (title, deadline, due string, desc, state) |
 | `emacs-todoist-org-heading-local-changed-p` | Compare current vs stored hash |
 | `emacs-todoist-org-heading-children` | Markers for direct child headings |
 | `emacs-todoist-org-synced-entries` | All headings with TODOIST_ID in buffer |
@@ -63,9 +65,10 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-api-token` | Get API token (handles string or function) |
 | `emacs-todoist-api-generate-uuid` | UUID v4 for command IDs |
 | `emacs-todoist-api-build-command` | Build generic Sync API command alist |
-| `emacs-todoist-api-item-add` | Build `item_add` (keywords: `:description`, `:project-id`, `:parent-id`, `:due-date`, `:temp-id`) |
-| `emacs-todoist-api-item-update` | Build `item_update` (keywords: `:content`, `:description`, `:due-date`, `:project-id`) |
+| `emacs-todoist-api-item-add` | Build `item_add` (keywords: `:description`, `:project-id`, `:parent-id`, `:due-date`, `:due-string`, `:temp-id`) |
+| `emacs-todoist-api-item-update` | Build `item_update` (keywords: `:content`, `:description`, `:due-date`, `:due-string`, `:project-id`) |
 | `emacs-todoist-api-item-complete` | Build `item_complete` commands (one per ID) |
+| `emacs-todoist-api-item-close` | Build `item_close` commands (recurring-safe completion) |
 | `emacs-todoist-api-item-uncomplete` | Build `item_uncomplete` commands |
 | `emacs-todoist-api-item-delete` | Build `item_delete` commands |
 | `emacs-todoist-api-parse-response` | Extract sync_token, sync_status, temp_id_mapping, items, projects |
@@ -89,8 +92,17 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 
 | Command | Purpose |
 |---------|---------|
-| `emacs-todoist-open` | Create/recreate ephemeral `*Todoist*` org buffer from remote items |
+| `emacs-todoist-open` | Create/recreate the file-backed Todoist org buffer from remote items |
 | `emacs-todoist-frontend-sync` | Incremental refresh for the frontend buffer using stored sync token |
+
+**`emacs-todoist-org-capture.el`** — capture commands/hooks:
+
+| Function | Purpose |
+|----------|---------|
+| `emacs-todoist-org-capture-install-template` | Install the Todoist capture template into `org-capture-templates` |
+| `emacs-todoist-org-capture` | Invoke org-capture with the Todoist template |
+| `emacs-todoist-org-capture-before-finalize` | Save a stable marker before capture finalization |
+| `emacs-todoist-org-capture-after-finalize` | Route/push the captured heading after finalization |
 
 **`emacs-todoist.el`** — key internal functions:
 
@@ -122,7 +134,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-api-token` | string or function | Todoist API token |
 | `emacs-todoist-default-project` | string or nil | Default project name or numeric ID |
 | `emacs-todoist-todo-state-mapping` | alist | TODO states → checked values (default: TODO=nil, DONE=1) |
-| `emacs-todoist-log-level` | symbol | Minimum log level: `debug`, `info`, `error` |
+| `emacs-todoist-log-level` | symbol | Minimum log level: `debug`, `info`, `warn`, `error` |
 | `emacs-todoist-log-buffer-name` | string | Log buffer name (default: `"*emacs-todoist-log*"`) |
 
 ## Sync state model
@@ -133,7 +145,7 @@ All state lives in org heading properties — no external caches:
 |----------|---------|
 | `TODOIST_ID` | Real Todoist task ID |
 | `TODOIST_PROJECT` | Project ID override |
-| `TODOIST_LOCAL_HASH` | SHA-1 of (title, deadline, desc, state) |
+| `TODOIST_LOCAL_HASH` | SHA-1 of (title, deadline, due string, desc, state) |
 | `TODOIST_REMOTE_HASH` | SHA-1 of Todoist item's sync-relevant fields |
 | `TODOIST_SYNC_TOKEN` | Sync token from last successful sync |
 
@@ -189,32 +201,35 @@ emacs-todoist--sync-entries(linked-markers, new-markers)
 ## Testing
 
 ```sh
-make test              # All non-live tests (141 tests)
-make test-org          # Only org module tests (45 tests)
-make test-api          # Only API tests (37 tests, mocked HTTP)
-make test-integration  # Only integration tests (39 tests)
-make test-frontend     # Only frontend tests (20 tests)
-make test-live         # Live API tests (9 tests, requires token)
+make test              # All non-live tests (194 tests)
+make test-org          # Only org module tests (52 tests)
+make test-api          # Only API tests (46 tests, mocked HTTP)
+make test-integration  # Only integration tests (60 tests)
+make test-frontend     # Only frontend tests (29 tests)
+make test-live         # Live API tests (10 tests, requires token)
 
 # Filter by file and pattern:
 make test FILE=test-org MATCH=description
+make test FILE=test-org-capture
 ```
 
 ### Test architecture
 
-- **`tests/test-org.el`** (45 tests) — Unit tests for all
+- **`tests/test-org.el`** (52 tests) — Unit tests for all
   `emacs-todoist-org-*` functions. Uses `with-org-buffer` helper.
-- **`tests/test-api.el`** (37 tests) — Unit tests for API command
+- **`tests/test-api.el`** (46 tests) — Unit tests for API command
   builders, parsing, and hashing. Mocks `url-retrieve` via `cl-letf`.
-- **`tests/test-integration.el`** (39 tests) — End-to-end sync
+- **`tests/test-integration.el`** (60 tests) — End-to-end sync
   logic. Mocks `emacs-todoist-api-sync` via `with-mock-sync`. Tests
   cover single heading sync, force push/pull, bulk sync, project
   resolution, deletion handling, parent/child cascading, logging.
-- **`tests/test-frontend.el`** (20 tests) — Frontend rendering and
+- **`tests/test-frontend.el`** (29 tests) — Frontend rendering and
   incremental sync tests for `emacs-todoist-open` and
   `emacs-todoist-frontend-sync`, including project grouping and
   top-level insertion behavior.
-- **`tests/test-live.el`** (9 tests) — Real API calls, excluded
+- **`tests/test-org-capture.el`** (7 tests) — Capture-template and
+  finalize-hook tests for `emacs-todoist-org-capture.el`.
+- **`tests/test-live.el`** (10 tests) — Real API calls, excluded
   from `make test`. See below.
 
 ### Test helpers
@@ -231,7 +246,7 @@ make test FILE=test-org MATCH=description
 
 ### Live API tests
 
-`tests/test-live.el` contains 9 tests that hit the real Todoist Sync
+`tests/test-live.el` contains 10 tests that hit the real Todoist Sync
 API v1.  They are **excluded** from the default `make test` target
 (via `run-tests.el`) and must be run explicitly with `make test-live`.
 
@@ -304,19 +319,19 @@ permissions.
 ## Implementation phases
 
 - [x] Phase 0: Dev tooling (Makefile, test runner)
-- [x] Phase 1: Org module (13 public functions, 45 tests)
-- [x] Phase 2: API module (14 public functions, 37 tests)
-- [x] Phase 3: Integration layer — sync logic, logging, 39 tests
+- [x] Phase 1: Org module (13 public functions, covered by `tests/test-org.el`)
+- [x] Phase 2: API module (14 public functions, covered by `tests/test-api.el`)
+- [x] Phase 3: Integration layer — sync logic, logging, covered by `tests/test-integration.el`
 - [x] Phase 4a: Bulk sync commands (`sync-buffer`, `sync-subtree`,
   `sync-region`) — done, 14 bulk-specific integration tests
 - [x] Phase 4b: `emacs-todoist-open` frontend buffer + incremental
-  `emacs-todoist-frontend-sync` (20 tests)
+  `emacs-todoist-frontend-sync` (covered by `tests/test-frontend.el`)
 - [ ] Phase 5: Polish (README.org, package metadata cleanup)
 
-## Current project snapshot (2026-03-08)
+## Current project snapshot (2026-03-09)
 
-- Core non-live test suite: `141/141` passing.
-- Live API suite: `9/9` passing.
+- Core non-live test suite: `194/194` passing.
+- Live API suite: `10/10` passing.
 - Frontend buffer is implemented and autoloaded from
   `emacs-todoist.el`.
 - Recent regression classes now covered by tests:

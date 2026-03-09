@@ -656,6 +656,20 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
         (should (string-match-p "Pushed 5 tasks" (buffer-string))))
       (kill-buffer buf))))
 
+(ert-deftest emacs-todoist-integration/log-warn-level-supported ()
+  "`warn' logs are modeled distinctly from `info' and `error'."
+  (let ((emacs-todoist-log-level 'warn)
+        (emacs-todoist-log-buffer-name "*test-todoist-log-warn*"))
+    (emacs-todoist-log 'info "Should not appear")
+    (emacs-todoist-log 'warn "Should appear")
+    (let ((buf (get-buffer emacs-todoist-log-buffer-name)))
+      (should buf)
+      (with-current-buffer buf
+        (should-not (string-match-p "Should not appear" (buffer-string)))
+        (should (string-match-p "\\[WARN\\]" (buffer-string)))
+        (should (string-match-p "Should appear" (buffer-string))))
+      (kill-buffer buf))))
+
 ;; ==============================================================================
 ;; State conversion
 ;; ==============================================================================

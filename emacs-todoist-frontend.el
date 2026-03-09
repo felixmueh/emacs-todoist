@@ -20,7 +20,7 @@
 (require 'cl-lib)
 (require 'emacs-todoist)
 
-(defvar emacs-todoist-frontend-buffer-name "todoist.org"
+(defvar emacs-todoist-frontend-buffer-name nil
   "Name of the Todoist frontend buffer.")
 
 (defvar-local emacs-todoist--frontend-project-map nil
@@ -41,7 +41,7 @@
                       (> (length org-directory) 0))
                  org-directory
                (expand-file-name "~/org"))))
-    (expand-file-name "todoist.org" dir)))
+    (expand-file-name emacs-todoist-frontend-buffer-name dir)))
 
 (defun emacs-todoist--frontend-clear-transient-overlays ()
   "Remove transient snippet overlays that can leak into frontend rendering."
@@ -139,9 +139,7 @@ is not in cache.  Returns a marker for the inserted heading."
               (when (re-search-forward org-heading-regexp nil t)
                 (beginning-of-line)
                 (setq new-marker (copy-marker (point) t))
-                (dolist (prop '("TODOIST_ID" "TODOIST_LOCAL_HASH"
-                                "TODOIST_REMOTE_HASH" "TODOIST_SYNC_TOKEN"))
-                  (org-entry-delete (point) prop))
+                (emacs-todoist--delete-sync-state-properties)
                 (when project-id
                   (emacs-todoist-org-set-props
                    `(("TODOIST_PROJECT" . ,project-id))))))))))
@@ -265,7 +263,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 
 ;;;###autoload
 (defun emacs-todoist-open ()
-  "Open and render Todoist tasks in the frontend `todoist.org' Org buffer."
+  "Open and render Todoist tasks in the frontend Org buffer."
   (interactive)
   (let* ((frontend-file (emacs-todoist--frontend-file-path))
          (already-open (get-file-buffer frontend-file)))

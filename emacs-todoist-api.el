@@ -156,7 +156,9 @@ Keyword ARGS:
 (defun emacs-todoist-api-item-complete (ids)
   "Build `item_complete' commands for each ID in IDS.
 IDS is a list of task ID strings.  Returns a list of command alists,
-one per ID, since the Sync API v1 `item_complete' takes a single `id'."
+one per ID, since the Sync API v1 `item_complete' takes a single `id'.
+Keep this for exact API coverage, but sync flows that may touch
+recurring tasks should generally prefer `emacs-todoist-api-item-close'."
   (mapcar (lambda (id)
             (emacs-todoist-api-build-command "item_complete" `((id . ,id))))
           ids))
@@ -205,6 +207,9 @@ Missing keys in RESPONSE are returned as nil."
 ;; Item hashing
 ;; ==============================================================================
 
+;; This normalization is intentionally separate from
+;; `emacs-todoist-org--normalize-hash-string': remote-hash computation
+;; operates on Todoist API payloads, not on org heading fields.
 (defun emacs-todoist-api--normalize-hash-string (value)
   "Return VALUE trimmed for stable hash comparisons."
   (if (stringp value)

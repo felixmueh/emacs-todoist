@@ -111,7 +111,7 @@ nil means unchecked (active), 1 means checked (completed)."
 
 (defcustom emacs-todoist-log-level 'info
   "Minimum log level for emacs-todoist messages."
-  :type '(choice (const debug) (const info) (const error))
+  :type '(choice (const debug) (const info) (const warn) (const error))
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-log-buffer-name "*emacs-todoist-log*"
@@ -164,10 +164,14 @@ After relocation, the captured heading is synced immediately."
 ;; Logging
 ;; ==============================================================================
 
-;; Numeric levels for comparison: debug=0, info=1, error=2.
+;; Numeric levels for comparison: debug=0, info=1, warn=2, error=3.
 (defconst emacs-todoist--log-level-alist
-  '((debug . 0) (info . 1) (error . 2))
+  '((debug . 0) (info . 1) (warn . 2) (error . 3))
   "Mapping from log level symbols to numeric priority.")
+
+(defconst emacs-todoist--sync-state-property-keys
+  '("TODOIST_ID" "TODOIST_LOCAL_HASH" "TODOIST_REMOTE_HASH" "TODOIST_SYNC_TOKEN")
+  "Todoist sync-state properties written by successful sync operations.")
 
 (defvar emacs-todoist--suppress-auto-sync nil
   "Internal recursion guard for TODO-state auto sync.")
@@ -205,6 +209,21 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
       emacs-todoist-frontend-on-done-action
     emacs-todoist-on-done-action))
 
+(defun emacs-todoist--delete-heading-properties (properties)
+  "Delete each property in PROPERTIES from the heading at point."
+  (dolist (prop properties)
+    (org-entry-delete (point) prop)))
+
+(defun emacs-todoist--delete-sync-state-properties ()
+  "Delete emacs-todoist sync-state properties from the heading at point."
+  (emacs-todoist--delete-heading-properties
+   emacs-todoist--sync-state-property-keys))
+
+(defun emacs-todoist--delete-todoist-properties ()
+  "Delete all TODOIST_* properties from the heading at point."
+  (emacs-todoist--delete-heading-properties
+   (mapcar #'car (emacs-todoist-org-heading-props))))
+
 (defun emacs-todoist--run-on-done-action (marker)
   "Run configured DONE action for MARKER if that heading is DONE."
   (when (and (markerp marker) (marker-buffer marker))
@@ -215,8 +234,7 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
           (let ((action (emacs-todoist--effective-on-done-action)))
             (pcase action
               ('delete-properties
-               (dolist (prop (emacs-todoist-org-heading-props))
-                 (org-entry-delete (point) (car prop))))
+               (emacs-todoist--delete-todoist-properties))
               ('delete-heading
                (org-back-to-heading t)
                (org-cut-subtree))
@@ -458,22 +476,11 @@ allowing us to compute a remote hash for data we're about to push."
                           (nreverse due-obj))))
       (checked     . ,(emacs-todoist--state-to-checked state)))))
 
-(defun emacs-todoist--item-due-date (item)
-  "Return ITEM's due date string, or nil."
-  (when-let* ((due (alist-get 'due item))
-              (date (alist-get 'date due)))
-    (format "%s" date)))
-
-(defun emacs-todoist--item-due-string (item)
-  "Return ITEM's due string, or nil."
-  (when-let* ((due (alist-get 'due item))
-              (due-string (alist-get 'string due)))
-    (format "%s" due-string)))
-
 (defun emacs-todoist--find-item-by-id (items todoist-id)
-  "Return item from ITEMS matching TODOIST-ID, or nil."
+  "Return item from ITEMS matching TODOIST-ID, or nil.
+Coerces both numeric API IDs and string Org property values to strings."
   (cl-find-if (lambda (item)
-                (equal (format "%s" (alist-get 'id item))
+                (equal (emacs-todoist--item-id item)
                        (format "%s" todoist-id)))
               items))
 
@@ -492,8 +499,12 @@ and stored values used by conflict detection."
          (local-state-raw (emacs-todoist-org-heading-todo-state))
          (remote-title-raw (alist-get 'content remote-item))
          (remote-desc-raw (alist-get 'description remote-item))
-         (remote-deadline (emacs-todoist--item-due-date remote-item))
-         (remote-due-string (emacs-todoist--item-due-string remote-item))
+         (remote-due (alist-get 'due remote-item))
+         (remote-deadline (when-let* ((date (alist-get 'date remote-due)))
+                            (format "%s" date)))
+         (remote-due-string (when-let* ((due-string
+                                         (alist-get 'string remote-due)))
+                              (format "%s" due-string)))
          (remote-state (emacs-todoist--checked-to-state
                         (alist-get 'checked remote-item)))
          (local-title (if (stringp local-title-raw)
@@ -556,6 +567,16 @@ and stored values used by conflict detection."
 (defun emacs-todoist--item-completed-p (item)
   "Return non-nil when ITEM is completed (`checked')."
   (equal "DONE" (emacs-todoist--checked-to-state (alist-get 'checked item))))
+
+(defun emacs-todoist--unsynced-todo-markers (markers)
+  "Return TODO MARKERS that do not yet have a TODOIST_ID."
+  (cl-remove-if
+   (lambda (marker)
+     (with-current-buffer (marker-buffer marker)
+       (save-excursion
+         (goto-char marker)
+         (org-entry-get (point) "TODOIST_ID"))))
+   markers))
 
 (defun emacs-todoist--build-id-map-from-markers (markers)
   "Build hash table mapping TODOIST_ID strings to MARKERS."
@@ -1086,17 +1107,12 @@ Prompts the user with three choices:
        (message "emacs-todoist: deleted local heading \"%s\"" title))
       (?r
        ;; Remove the old TODOIST_ID and re-push as a brand new task.
-       (dolist (prop '("TODOIST_ID" "TODOIST_LOCAL_HASH"
-                       "TODOIST_REMOTE_HASH" "TODOIST_SYNC_TOKEN"))
-         (org-entry-delete (point) prop))
+       (emacs-todoist--delete-sync-state-properties)
        (emacs-todoist-log 'info "Re-pushing as new task: %s" title)
        (emacs-todoist--push-new-heading))
       (?k
        ;; Unlink: remove all Todoist properties but keep the heading.
-       (dolist (prop '("TODOIST_ID" "TODOIST_LOCAL_HASH"
-                       "TODOIST_REMOTE_HASH" "TODOIST_SYNC_TOKEN"
-                       "TODOIST_DUE_STRING"))
-         (org-entry-delete (point) prop))
+       (emacs-todoist--delete-todoist-properties)
        (emacs-todoist-log 'info "Unlinked heading: %s" title)
        (message "emacs-todoist: unlinked \"%s\" from Todoist" title)))))
 
@@ -1143,14 +1159,8 @@ the appropriate push/pull/conflict handler."
              (let* ((new-sync-token (alist-get 'sync_token response))
                     (items          (alist-get 'items response))
                     ;; Find this task in the returned items.
-                    ;; Task IDs from org properties are strings, but the
-                    ;; API returns them as numbers.  Coerce both to strings
-                    ;; for comparison.
                     (remote-item
-                     (cl-find-if (lambda (item)
-                                   (equal (format "%s" (alist-get 'id item))
-                                          todoist-id))
-                                 items))
+                     (emacs-todoist--find-item-by-id items todoist-id))
                     remote-changed)
 
                (with-current-buffer (marker-buffer marker)
@@ -1258,10 +1268,7 @@ Requires the heading to have a TODOIST_ID property."
          (let* ((new-sync-token (alist-get 'sync_token response))
                 (items          (alist-get 'items response))
                 (remote-item
-                 (cl-find-if (lambda (item)
-                               (equal (format "%s" (alist-get 'id item))
-                                      todoist-id))
-                             items)))
+                 (emacs-todoist--find-item-by-id items todoist-id)))
            (with-current-buffer (marker-buffer marker)
              (save-excursion
                (goto-char marker)
@@ -1398,10 +1405,7 @@ is where post-classification hooks run."
                  (current-local-hash (emacs-todoist-org-heading-local-hash))
                  (local-changed (not (equal current-local-hash stored-local-hash)))
                  (remote-item
-                  (cl-find-if (lambda (item)
-                                (equal (format "%s" (alist-get 'id item))
-                                       todoist-id))
-                              items)))
+                  (emacs-todoist--find-item-by-id items todoist-id)))
             (cond
              ;; Task found in response.
              (remote-item
@@ -1664,12 +1668,7 @@ headings (those without a TODOIST_ID) as new Todoist tasks."
   (let ((linked (emacs-todoist-org-synced-entries))
         (new    (when include-new
                   ;; New = TODO headings without TODOIST_ID.
-                  (cl-remove-if
-                   (lambda (m)
-                     (with-current-buffer (marker-buffer m)
-                       (save-excursion
-                         (goto-char m)
-                         (org-entry-get (point) "TODOIST_ID"))))
+                  (emacs-todoist--unsynced-todo-markers
                    (emacs-todoist-org-todo-entries)))))
     (emacs-todoist--sync-entries linked new)))
 
@@ -1681,12 +1680,7 @@ headings as new Todoist tasks."
   (org-back-to-heading t)
   (let ((linked (emacs-todoist-org-synced-entries-in-subtree))
         (new    (when include-new
-                  (cl-remove-if
-                   (lambda (m)
-                     (with-current-buffer (marker-buffer m)
-                       (save-excursion
-                         (goto-char m)
-                         (org-entry-get (point) "TODOIST_ID"))))
+                  (emacs-todoist--unsynced-todo-markers
                    (emacs-todoist-org-todo-entries-in-subtree)))))
     (emacs-todoist--sync-entries linked new)))
 
@@ -1701,12 +1695,7 @@ headings as new Todoist tasks."
          (end (region-end))
          (linked (emacs-todoist-org-synced-entries-in-region beg end))
          (new    (when include-new
-                   (cl-remove-if
-                    (lambda (m)
-                      (with-current-buffer (marker-buffer m)
-                        (save-excursion
-                          (goto-char m)
-                          (org-entry-get (point) "TODOIST_ID"))))
+                   (emacs-todoist--unsynced-todo-markers
                     (emacs-todoist-org-todo-entries-in-region beg end)))))
     (emacs-todoist--sync-entries linked new)))
 

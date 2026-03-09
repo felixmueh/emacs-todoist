@@ -127,6 +127,9 @@ Each element is (KEY . VALUE) where KEY is like \"TODOIST_ID\"."
 ;; Change detection via hashing
 ;; ==============================================================================
 
+;; This normalization is intentionally separate from
+;; `emacs-todoist-api--normalize-hash-string': local-hash computation
+;; operates on org heading fields, not on Todoist API payloads.
 (defun emacs-todoist-org--normalize-hash-string (value)
   "Return VALUE trimmed for stable hash comparisons."
   (cond

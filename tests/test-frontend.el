@@ -10,7 +10,8 @@
   "Run BODY and always kill the frontend buffer afterwards."
   (declare (indent 0))
   `(let* ((org-directory (make-temp-file "et-org-" t))
-          (frontend-file (expand-file-name "todoist.org" org-directory)))
+          (frontend-file (expand-file-name emacs-todoist-frontend-buffer-name
+                                           org-directory)))
      (unwind-protect
          (progn ,@body)
        (when-let* ((buf (get-file-buffer frontend-file)))
@@ -78,6 +79,13 @@
       (should (equal "DONE" (org-get-todo-state)))
       (should (equal "2026-04-10" (emacs-todoist-org-heading-deadline)))
       (should (equal "tok-2" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+(ert-deftest emacs-todoist-frontend/file-path-tracks-buffer-name ()
+  "Frontend file path is derived from `emacs-todoist-frontend-buffer-name'."
+  (let ((org-directory "/tmp/emacs-todoist-tests")
+        (emacs-todoist-frontend-buffer-name "tasks.org"))
+    (should (equal "/tmp/emacs-todoist-tests/tasks.org"
+                   (emacs-todoist--frontend-file-path)))))
 
 (ert-deftest emacs-todoist-frontend/apply-items-inserts-new-child ()
   "apply-items inserts a missing child when its parent exists in ID map."
@@ -358,7 +366,8 @@
         (should buf)
         (with-current-buffer buf
           (should (derived-mode-p 'org-mode))
-          (should (equal (expand-file-name "todoist.org" org-directory)
+          (should (equal (expand-file-name emacs-todoist-frontend-buffer-name
+                                           org-directory)
                          buffer-file-name))
           (should-not (buffer-modified-p))
           (should emacs-todoist-frontend-mode)
@@ -668,7 +677,8 @@
         (emacs-todoist-frontend-agenda)
         (should (= 1 (length seen-agenda-files)))
         (let ((agenda-file (car seen-agenda-files)))
-          (should (equal (expand-file-name "todoist.org" org-directory)
+          (should (equal (expand-file-name emacs-todoist-frontend-buffer-name
+                                           org-directory)
                          agenda-file))
           (with-temp-buffer
             (insert-file-contents agenda-file)
