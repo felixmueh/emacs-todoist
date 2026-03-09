@@ -145,6 +145,65 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
           (should (equal parent-temp-id (alist-get 'parent_id child-1-args)))
           (should (equal parent-temp-id (alist-get 'parent_id child-2-args))))))))
 
+(ert-deftest emacs-todoist-integration/push-new-heading-mixed-subtree-todo-only ()
+  "Only TODO headings are pushed; non-TODO intermediates are skipped."
+  (with-org-buffer
+      (concat "* TODO Parent task\n"
+              "** Notes heading\n"
+              "*** TODO Nested child\n"
+              "** TODO Direct child\n")
+    (with-mock-sync nil
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (push (list (cons 'commands commands))
+                         emacs-todoist-test--sync-calls)
+                   (let ((mapping nil)
+                         (counter 100))
+                     (dolist (cmd commands)
+                       (when-let* ((tid (alist-get 'temp_id cmd)))
+                         (push (cons tid (format "real-%d" counter)) mapping)
+                         (cl-incf counter)))
+                     (funcall callback
+                              `((sync_token . "tok-mixed")
+                                (temp_id_mapping . ,mapping)
+                                (items . nil)))))))
+        (emacs-todoist-sync-single-heading))
+      (let* ((call (car emacs-todoist-test--sync-calls))
+             (commands (alist-get 'commands call))
+             (parent-cmd
+              (cl-find-if
+               (lambda (cmd)
+                 (equal "Parent task"
+                        (alist-get 'content (alist-get 'args cmd))))
+               commands))
+             (nested-cmd
+              (cl-find-if
+               (lambda (cmd)
+                 (equal "Nested child"
+                        (alist-get 'content (alist-get 'args cmd))))
+               commands))
+             (direct-cmd
+              (cl-find-if
+               (lambda (cmd)
+                 (equal "Direct child"
+                        (alist-get 'content (alist-get 'args cmd))))
+               commands)))
+        (should (= 3 (length commands)))
+        (should parent-cmd)
+        (should nested-cmd)
+        (should direct-cmd)
+        (should-not
+         (cl-find-if
+          (lambda (cmd)
+            (equal "Notes heading"
+                   (alist-get 'content (alist-get 'args cmd))))
+          commands))
+        (let ((parent-temp-id (alist-get 'temp_id parent-cmd)))
+          (should (equal parent-temp-id
+                         (alist-get 'parent_id (alist-get 'args nested-cmd))))
+          (should (equal parent-temp-id
+                         (alist-get 'parent_id (alist-get 'args direct-cmd)))))))))
+
 ;; ==============================================================================
 ;; Remote-only change (pull)
 ;; ==============================================================================
@@ -1347,6 +1406,53 @@ defensive check that shouldn't happen in practice."
           (should (equal (alist-get 'temp_id parent-cmd)
                          (alist-get 'parent_id (alist-get 'args child-cmd)))))))))
 
+(ert-deftest emacs-todoist-integration/sync-buffer-new-grandchildren-not-duplicated-through-non-todo ()
+  "Nested TODO descendants are pushed once when parent TODO is also new."
+  (with-org-buffer
+      (concat "* TODO Parent task\n"
+              "** Notes heading\n"
+              "*** TODO Nested child\n")
+    (let ((emacs-todoist-log-level 'error)
+          (emacs-todoist--project-cache '(("inbox" . "111")))
+          (pushed-commands nil))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (when commands
+                     (setq pushed-commands commands))
+                   (let ((mapping nil)
+                         (counter 0))
+                     (dolist (cmd commands)
+                       (when (equal "item_add" (alist-get 'type cmd))
+                         (let ((tid (alist-get 'temp_id cmd)))
+                           (push (cons tid (format "real-%d" (cl-incf counter)))
+                                 mapping))))
+                     (funcall callback
+                              `((sync_token . "tok-nested")
+                                (temp_id_mapping . ,mapping)
+                                (items . nil)))))))
+        (emacs-todoist-sync-buffer t))
+      (let* ((add-cmds (cl-remove-if-not
+                        (lambda (cmd)
+                          (equal "item_add" (alist-get 'type cmd)))
+                        pushed-commands))
+             (parent-cmd
+              (cl-find-if
+               (lambda (cmd)
+                 (equal "Parent task"
+                        (alist-get 'content (alist-get 'args cmd))))
+               add-cmds))
+             (nested-cmd
+              (cl-find-if
+               (lambda (cmd)
+                 (equal "Nested child"
+                        (alist-get 'content (alist-get 'args cmd))))
+               add-cmds)))
+        (should (= 2 (length add-cmds)))
+        (should parent-cmd)
+        (should nested-cmd)
+        (should (equal (alist-get 'temp_id parent-cmd)
+                       (alist-get 'parent_id (alist-get 'args nested-cmd))))))))
+
 (ert-deftest emacs-todoist-integration/sync-subtree-with-prefix-parents-new-child-under-synced-parent ()
   "sync-subtree with prefix pushes new child headings with parent_id."
   (with-org-buffer
@@ -1398,6 +1504,60 @@ defensive check that shouldn't happen in practice."
         (should (equal "parent-1" (alist-get 'parent_id args)))
         (should (null (alist-get 'project_id args))))
       (re-search-forward "^\\*\\* TODO New child") (beginning-of-line)
+      (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID"))))))
+
+(ert-deftest emacs-todoist-integration/sync-subtree-with-prefix-parents-nested-child-through-non-todo-parent ()
+  "sync-subtree with prefix uses nearest TODO ancestor for nested new TODOs."
+  (with-org-buffer
+      (concat "* TODO Existing parent\n"
+              "** Notes heading\n"
+              "*** TODO New nested child\n")
+    (let* ((emacs-todoist-log-level 'error)
+           (emacs-todoist-default-project "Inbox")
+           (emacs-todoist--project-cache '(("inbox" . "111")))
+           (pushed-commands nil)
+           (parent-remote-item nil)
+           (parent-local-hash nil)
+           (parent-remote-hash nil))
+      (setq parent-local-hash (emacs-todoist-org-heading-local-hash))
+      (setq parent-remote-item
+            (append '((id . "parent-1"))
+                    (emacs-todoist--heading-as-remote-item)))
+      (setq parent-remote-hash (emacs-todoist-api-hash-item parent-remote-item))
+      (emacs-todoist-org-set-props
+       `(("TODOIST_ID" . "parent-1")
+         ("TODOIST_LOCAL_HASH" . ,parent-local-hash)
+         ("TODOIST_REMOTE_HASH" . ,parent-remote-hash)
+         ("TODOIST_SYNC_TOKEN" . "tok-0")))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types commands callback)
+                   (if commands
+                       (progn
+                         (setq pushed-commands commands)
+                         (let ((mapping nil)
+                               (counter 1))
+                           (dolist (cmd commands)
+                             (when-let* ((tid (alist-get 'temp_id cmd)))
+                               (push (cons tid (format "real-%d" counter)) mapping)
+                               (cl-incf counter)))
+                           (funcall callback
+                                    `((sync_token . "tok-2")
+                                      (temp_id_mapping . ,mapping)
+                                      (items . nil)))))
+                     (funcall callback
+                              `((sync_token . "tok-1")
+                                (items . (,parent-remote-item))))))))
+        (emacs-todoist-sync-subtree t))
+      (let* ((add-cmds (cl-remove-if-not
+                        (lambda (cmd) (equal "item_add" (alist-get 'type cmd)))
+                        pushed-commands))
+             (child-cmd (car add-cmds))
+             (args (alist-get 'args child-cmd)))
+        (should (= 1 (length add-cmds)))
+        (should (equal "New nested child" (alist-get 'content args)))
+        (should (equal "parent-1" (alist-get 'parent_id args)))
+        (should (null (alist-get 'project_id args))))
+      (re-search-forward "^\\*\\*\\* TODO New nested child") (beginning-of-line)
       (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID"))))))
 
 (ert-deftest emacs-todoist-integration/sync-buffer-without-prefix-skips-new-headings ()

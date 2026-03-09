@@ -621,6 +621,20 @@ the parent project container subtree.  Returns inserted heading count."
 ;; Command builders (extracted for reuse in bulk sync)
 ;; ==============================================================================
 
+(defun emacs-todoist--nearest-todo-ancestor-id (new-temp-ids)
+  "Return nearest TODO ancestor ID for heading at point, or nil.
+Prefers a temp ID from NEW-TEMP-IDS (same batch) and falls back to an
+existing `TODOIST_ID' from a synced ancestor."
+  (save-excursion
+    (let ((resolved-parent nil))
+      (while (and (null resolved-parent) (org-up-heading-safe))
+        ;; Only TODO ancestors map to Todoist tasks.
+        (when (org-get-todo-state)
+          (setq resolved-parent
+                (or (gethash (point) new-temp-ids)
+                    (org-entry-get (point) "TODOIST_ID")))))
+      resolved-parent)))
+
 (defun emacs-todoist--build-push-commands (todoist-id)
   "Build item_update + item_close/uncomplete commands for heading at point.
 TODOIST-ID is the existing task's ID.  Returns a list of command alists
@@ -666,60 +680,47 @@ TODOIST-ID is the existing task's ID.  Returns a list of command alists
     commands))
 
 (defun emacs-todoist--build-new-heading-commands ()
-  "Build item_add commands for heading at point and its children.
+  "Build `item_add' commands for unsynced TODO headings in current subtree.
 Assumes the project cache is already populated.
 Returns (COMMANDS . ENTRIES) where COMMANDS is a list of command alists
-and ENTRIES is a list of (TEMP-ID . MARKER) pairs for writeback."
-  (let* ((data   (emacs-todoist-org-heading-to-alist))
-         (title  (alist-get 'title data))
-         (desc   (alist-get 'description data))
-         (due-date (alist-get 'deadline data))
-         (due-string (alist-get 'due-string data))
-         (proj   (emacs-todoist--resolve-project-id (alist-get 'project data)))
-         ;; New headings inserted under already-synced parents must carry
-         ;; parent_id, otherwise they become top-level tasks in Todoist.
-         (existing-parent-id
+and ENTRIES is a list of (TEMP-ID . MARKER) pairs for writeback.
+
+Only TODO headings are pushed as Todoist tasks.  Parent links are
+resolved via the nearest TODO ancestor, skipping non-TODO headings."
+  (if (null (emacs-todoist-org-heading-todo-state))
+      (cons nil nil)
+    (let* ((todo-markers
+            (emacs-todoist--unsynced-todo-markers
+             (emacs-todoist-org-todo-entries-in-subtree)))
+           (new-temp-ids (make-hash-table :test #'eql))
+           (commands '())
+           (entries '()))
+      (dolist (marker todo-markers)
+        (with-current-buffer (marker-buffer marker)
           (save-excursion
-            (org-back-to-heading t)
-            (when (org-up-heading-safe)
-              (org-entry-get (point) "TODOIST_ID"))))
-         (parent-temp-id (emacs-todoist-api-generate-uuid))
-         (commands '())
-         (entries (list (cons parent-temp-id (point-marker)))))
-
-    ;; Build the parent item_add command.
-    (push (emacs-todoist-api-item-add
-           title
-           :description (unless (string-empty-p desc) desc)
-           :due-date due-date
-           :due-string due-string
-           :project-id (unless existing-parent-id proj)
-           :parent-id existing-parent-id
-           :temp-id parent-temp-id)
-          commands)
-
-    ;; Build child item_add commands.  Each child references the parent
-    ;; via the parent's temp_id, which Todoist resolves server-side.
-    (dolist (child-marker (alist-get 'children data))
-      (save-excursion
-        (goto-char child-marker)
-        (let* ((child-title (emacs-todoist-org-heading-title))
-               (child-desc  (emacs-todoist-org-heading-description))
-               (child-due-date (emacs-todoist-org-heading-deadline))
-               (child-due-string (emacs-todoist-org-heading-due-string))
-               (child-temp  (emacs-todoist-api-generate-uuid))
-               (child-cmd
-                (emacs-todoist-api-item-add
-                 child-title
-                 :description (unless (string-empty-p child-desc) child-desc)
-                 :due-date child-due-date
-                 :due-string child-due-string
-                 :parent-id parent-temp-id
-                 :temp-id child-temp)))
-          (push child-cmd commands)
-          (push (cons child-temp child-marker) entries))))
-
-    (cons (nreverse commands) (nreverse entries))))
+            (goto-char marker)
+            (let* ((title (emacs-todoist-org-heading-title))
+                   (desc (emacs-todoist-org-heading-description))
+                   (due-date (emacs-todoist-org-heading-deadline))
+                   (due-string (emacs-todoist-org-heading-due-string))
+                   (parent-id
+                    (emacs-todoist--nearest-todo-ancestor-id new-temp-ids))
+                   (proj (unless parent-id
+                           (emacs-todoist--resolve-project-id
+                            (emacs-todoist-org-resolve-project))))
+                   (temp-id (emacs-todoist-api-generate-uuid)))
+              (push (emacs-todoist-api-item-add
+                     title
+                     :description (unless (string-empty-p desc) desc)
+                     :due-date due-date
+                     :due-string due-string
+                     :project-id proj
+                     :parent-id parent-id
+                     :temp-id temp-id)
+                    commands)
+              (push (cons temp-id (copy-marker marker t)) entries)
+              (puthash (marker-position marker) temp-id new-temp-ids)))))
+      (cons (nreverse commands) (nreverse entries)))))
 
 ;; ==============================================================================
 ;; Push new heading (no TODOIST_ID yet)
@@ -727,7 +728,7 @@ and ENTRIES is a list of (TEMP-ID . MARKER) pairs for writeback."
 
 (defun emacs-todoist--push-new-heading ()
   "Push the heading at point as a new Todoist task.
-Builds item_add commands for the heading and its direct children,
+Builds item_add commands for unsynced TODO headings in its subtree,
 sends them via the Sync API, and writes back the resulting IDs and
 hashes as org properties.
 
@@ -750,27 +751,33 @@ Assumes the project cache is already populated.  Called by
          (entries  (cdr result))
          (title    (emacs-todoist-org-heading-title)))
 
-    (emacs-todoist-log 'info "Pushing new heading: %s" title)
+    (if (null commands)
+        (progn
+          (emacs-todoist-log
+           'info "Skipping push: heading has no unsynced TODO tasks in subtree: %s"
+           title)
+          (message "emacs-todoist: no TODO tasks to push in this subtree"))
+      (emacs-todoist-log 'info "Pushing new heading: %s" title)
 
-    ;; Send the batch to Todoist.  The callback writes properties back
-    ;; onto the org headings once we have real IDs.
-    (emacs-todoist-api-sync
-     "*" '("items") commands
-     (lambda (response)
-       (cond
-        ((alist-get 'error response)
-         (emacs-todoist-log 'error "Sync error: %s" (alist-get 'error response))
-         (message "emacs-todoist: sync error for \"%s\"" title))
+      ;; Send the batch to Todoist.  The callback writes properties back
+      ;; onto the org headings once we have real IDs.
+      (emacs-todoist-api-sync
+       "*" '("items") commands
+       (lambda (response)
+         (cond
+          ((alist-get 'error response)
+           (emacs-todoist-log 'error "Sync error: %s" (alist-get 'error response))
+           (message "emacs-todoist: sync error for \"%s\"" title))
 
-        ((emacs-todoist--check-sync-status response)
-         (emacs-todoist-log 'error "Push failed for %s: %s"
-                            title (emacs-todoist--check-sync-status response))
-         (message "emacs-todoist: push failed for \"%s\" (see log)" title))
+          ((emacs-todoist--check-sync-status response)
+           (emacs-todoist-log 'error "Push failed for %s: %s"
+                              title (emacs-todoist--check-sync-status response))
+           (message "emacs-todoist: push failed for \"%s\" (see log)" title))
 
-        (t
-         (emacs-todoist--write-new-heading-props entries response)
-         (emacs-todoist-log 'info "Pushed new heading successfully: %s" title)
-         (message "emacs-todoist: pushed new task \"%s\"" title)))))))
+          (t
+           (emacs-todoist--write-new-heading-props entries response)
+           (emacs-todoist-log 'info "Pushed new heading successfully: %s" title)
+           (message "emacs-todoist: pushed new task \"%s\"" title))))))))
 
 (defun emacs-todoist--write-new-heading-props (entries response)
   "Write IDs, hashes, and sync token to headings from a push response.
@@ -1364,18 +1371,22 @@ PULLED, SKIPPED, and INSERTED are counters for the summary message."
   (let ((new-entries '())
         (all-commands (copy-sequence (or push-commands '()))))
     ;; Step 4: build item_add commands for each new heading.
-    ;; Filter out children whose parent is also in new-markers, since
-    ;; `emacs-todoist--build-new-heading-commands' already creates
-    ;; item_add commands for direct children of each heading.
-    (let ((marker-positions (mapcar #'marker-position new-markers)))
+    ;; Filter out descendants whose TODO ancestor is also in NEW-MARKERS,
+    ;; since `emacs-todoist--build-new-heading-commands' already traverses
+    ;; the full TODO subtree from each root marker.
+    (let ((new-marker-positions (mapcar #'marker-position new-markers)))
       (setq new-markers
             (cl-remove-if
-             (lambda (m)
-               (with-current-buffer (marker-buffer m)
+             (lambda (marker)
+               (with-current-buffer (marker-buffer marker)
                  (save-excursion
-                   (goto-char m)
-                   (and (org-up-heading-safe)
-                        (memq (point) marker-positions)))))
+                   (goto-char marker)
+                   (let ((skip nil))
+                     (while (and (not skip) (org-up-heading-safe))
+                       (when (and (org-get-todo-state)
+                                  (memq (point) new-marker-positions))
+                         (setq skip t)))
+                     skip))))
              new-markers)))
     (dolist (marker new-markers)
       (with-current-buffer (marker-buffer marker)
