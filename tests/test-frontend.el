@@ -10,7 +10,7 @@
   "Run BODY and always kill the frontend buffer afterwards."
   (declare (indent 0))
   `(let* ((org-directory (make-temp-file "et-org-" t))
-          (frontend-file (expand-file-name emacs-todoist-frontend-buffer-name
+          (frontend-file (expand-file-name emacs-todoist-frontend-file-name
                                            org-directory)))
      (unwind-protect
          (progn ,@body)
@@ -80,10 +80,10 @@
       (should (equal "2026-04-10" (emacs-todoist-org-heading-deadline)))
       (should (equal "tok-2" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
 
-(ert-deftest emacs-todoist-frontend/file-path-tracks-buffer-name ()
-  "Frontend file path is derived from `emacs-todoist-frontend-buffer-name'."
+(ert-deftest emacs-todoist-frontend/file-path-tracks-file-name ()
+  "Frontend file path is derived from `emacs-todoist-frontend-file-name'."
   (let ((org-directory "/tmp/emacs-todoist-tests")
-        (emacs-todoist-frontend-buffer-name "tasks.org"))
+        (emacs-todoist-frontend-file-name "tasks.org"))
     (should (equal "/tmp/emacs-todoist-tests/tasks.org"
                    (emacs-todoist--frontend-file-path)))))
 
@@ -362,11 +362,11 @@
                (lambda (_sync-token _resource-types _commands callback)
                  (funcall callback (emacs-todoist-test--frontend-open-response)))))
       (emacs-todoist-open)
-      (let ((buf (get-buffer emacs-todoist-frontend-buffer-name)))
+      (let ((buf (get-buffer emacs-todoist-frontend-file-name)))
         (should buf)
         (with-current-buffer buf
           (should (derived-mode-p 'org-mode))
-          (should (equal (expand-file-name emacs-todoist-frontend-buffer-name
+          (should (equal (expand-file-name emacs-todoist-frontend-file-name
                                            org-directory)
                          buffer-file-name))
           (should-not (buffer-modified-p))
@@ -403,13 +403,13 @@
                                '((sync_token . "tok-second-open-2")
                                  (items . nil))))))))
         (emacs-todoist-open)
-        (let ((first (get-buffer emacs-todoist-frontend-buffer-name)))
+        (let ((first (get-buffer emacs-todoist-frontend-file-name)))
           (emacs-todoist-open)
-          (let ((second (get-buffer emacs-todoist-frontend-buffer-name)))
+          (let ((second (get-buffer emacs-todoist-frontend-file-name)))
             (should first)
             (should second)
             (should (eq first second))))
-        (with-current-buffer emacs-todoist-frontend-buffer-name
+        (with-current-buffer emacs-todoist-frontend-file-name
           (goto-char (point-min))
           (should (re-search-forward "^\\*\\* TODO From Second Open$" nil t)))
         (should (>= calls 2))))))
@@ -449,7 +449,7 @@
                (lambda (_sync-token _resource-types _commands callback)
                  (funcall callback (emacs-todoist-test--frontend-open-response)))))
       (emacs-todoist-open)
-      (with-current-buffer emacs-todoist-frontend-buffer-name
+      (with-current-buffer emacs-todoist-frontend-file-name
         (goto-char (point-min))
         (should (re-search-forward "^\\* Inbox$" nil t))
         (beginning-of-line)
@@ -480,7 +480,7 @@
                                        (due . nil)
                                        (checked . 0)))))))))
       (emacs-todoist-open)
-      (with-current-buffer emacs-todoist-frontend-buffer-name
+      (with-current-buffer emacs-todoist-frontend-file-name
         (goto-char (point-min))
         (should (re-search-forward "^\\* Unknown Project$" nil t))
         (should (re-search-forward "^\\*\\* TODO Loose$" nil t))))))
@@ -511,7 +511,7 @@
                                                (checked . 0))))))
                        (funcall callback '((sync_token . "tok-sync-2") (items . nil))))))))
         (emacs-todoist-open)
-        (with-current-buffer emacs-todoist-frontend-buffer-name
+        (with-current-buffer emacs-todoist-frontend-file-name
           (emacs-todoist-frontend-sync)
           (goto-char (point-min))
           (should (re-search-forward "^\\*\\* TODO Remote New$" nil t))))
@@ -541,7 +541,7 @@
                                              (checked . 1))))))
                      (funcall callback '((sync_token . "tok-sync-2") (items . nil))))))))
       (emacs-todoist-open)
-      (with-current-buffer emacs-todoist-frontend-buffer-name
+      (with-current-buffer emacs-todoist-frontend-file-name
         (emacs-todoist-frontend-sync)
         (goto-char (point-min))
         (should-not (re-search-forward "^\\*\\* DONE Completed remotely$" nil t))
@@ -575,10 +575,58 @@
                                '((sync_token . "tok-sync-2")
                                  (items . nil))))))))
       (emacs-todoist-open)
-      (with-current-buffer emacs-todoist-frontend-buffer-name
+      (with-current-buffer emacs-todoist-frontend-file-name
         (emacs-todoist-frontend-sync)
         (goto-char (point-min))
         (should (re-search-forward "^\\*\\* TODO Remote New From Callback$" nil t))))))
+
+(ert-deftest emacs-todoist-frontend/frontend-sync-bootstrap-forces-full-fetch ()
+  "The first frontend sync always uses `*' to bootstrap complete state."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((seen-fetch-token nil)
+          (seed-item '((id . "seed-1")
+                       (content . "Seeded Capture")
+                       (description . "")
+                       (project_id . "proj-1")
+                       (due . nil)
+                       (checked . 0)))
+          (older-item '((id . "older-1")
+                        (content . "Older Remote")
+                        (description . "")
+                        (project_id . "proj-1")
+                        (due . nil)
+                        (checked . 0))))
+      (with-current-buffer (emacs-todoist-frontend-ensure-buffer)
+        (erase-buffer)
+        (insert "* Inbox\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\n"
+                "** TODO Seeded Capture\n:PROPERTIES:\n:TODOIST_ID: seed-1\n:END:\n")
+        (goto-char (point-min))
+        (re-search-forward "^\\*\\* TODO Seeded Capture$")
+        (beginning-of-line)
+        (emacs-todoist-org-set-props
+         `(("TODOIST_LOCAL_HASH" . ,(emacs-todoist-org-heading-local-hash))
+           ("TODOIST_REMOTE_HASH" . ,(emacs-todoist-api-hash-item seed-item))
+           ("TODOIST_SYNC_TOKEN" . "tok-seeded")))
+        (setq-local emacs-todoist--frontend-bootstrap-complete nil)
+        (setq-local emacs-todoist--frontend-id-to-name
+                    (let ((table (make-hash-table :test #'equal)))
+                      (puthash "proj-1" "Inbox" table)
+                      table)))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (sync-token _resource-types commands callback)
+                   (if (null commands)
+                       (progn
+                         (setq seen-fetch-token sync-token)
+                         (funcall callback
+                                  `((sync_token . "tok-bootstrap")
+                                    (items . (,seed-item ,older-item)))))
+                     (funcall callback '((sync_token . "tok-push") (items . nil)))))))
+        (with-current-buffer emacs-todoist-frontend-file-name
+          (emacs-todoist-frontend-sync)
+          (should (equal "*" seen-fetch-token))
+          (goto-char (point-min))
+          (should (re-search-forward "^\\*\\* TODO Older Remote$" nil t))
+          (should emacs-todoist--frontend-bootstrap-complete))))))
 
 (ert-deftest emacs-todoist-frontend/sync-heading-works ()
   "After frontend render, sync-heading on unchanged entry does not push."
@@ -600,7 +648,7 @@
                                            (due . ((date . "2026-05-01")))
                                            (checked . 0))))))))))
         (emacs-todoist-open)
-        (with-current-buffer emacs-todoist-frontend-buffer-name
+        (with-current-buffer emacs-todoist-frontend-file-name
           (goto-char (point-min))
           (re-search-forward "^\\*\\* TODO Top TODO$")
           (beginning-of-line)
@@ -636,7 +684,7 @@
                                                (checked . 1))))))
                        (funcall callback '((sync_token . "tok-push") (items . nil))))))))
         (emacs-todoist-open)
-        (with-current-buffer emacs-todoist-frontend-buffer-name
+        (with-current-buffer emacs-todoist-frontend-file-name
           (emacs-todoist-sync-buffer)
           (goto-char (point-min))
           (re-search-forward "^\\* Inbox$")
@@ -677,7 +725,7 @@
         (emacs-todoist-frontend-agenda)
         (should (= 1 (length seen-agenda-files)))
         (let ((agenda-file (car seen-agenda-files)))
-          (should (equal (expand-file-name emacs-todoist-frontend-buffer-name
+          (should (equal (expand-file-name emacs-todoist-frontend-file-name
                                            org-directory)
                          agenda-file))
           (with-temp-buffer
@@ -708,7 +756,7 @@
                    "* TODO Captured Task\nCaptured body.\n"
                    "proj-1" "Inbox")))
       (should (markerp marker))
-      (with-current-buffer emacs-todoist-frontend-buffer-name
+      (with-current-buffer emacs-todoist-frontend-file-name
         (goto-char marker)
         (should (equal "Captured Task" (emacs-todoist-org-heading-title)))
         (should (equal "proj-1" (org-entry-get (point) "TODOIST_PROJECT")))

@@ -6,13 +6,19 @@
 (require 'org-capture)
 (require 'emacs-todoist-org-capture)
 
-(ert-deftest emacs-todoist-org-capture/template-builds-hooks ()
-  "Template builder returns expected hook wiring."
-  (let* ((emacs-todoist-org-capture-template-key "T")
+(ert-deftest emacs-todoist-org-capture/template-builds-hooks-and-frontend-target ()
+  "Template builder returns expected hook wiring and frontend target."
+  (let* ((org-directory "/tmp/emacs-todoist-tests")
+         (emacs-todoist-frontend-file-name "todoist.org")
          (tpl (emacs-todoist-org-capture-template))
+         (target (nth 3 tpl))
          (props (nthcdr 5 tpl)))
-    (should (equal "T" (nth 0 tpl)))
     (should (equal 'entry (nth 2 tpl)))
+    (should (equal 'file+function (nth 0 target)))
+    (should (equal (expand-file-name "todoist.org" org-directory)
+                   (nth 1 target)))
+    (should (eq #'emacs-todoist-org-capture--goto-target-headline
+                (nth 2 target)))
     (should (eq #'emacs-todoist-org-capture-before-finalize
                 (plist-get props :before-finalize)))
     (should (eq #'emacs-todoist-org-capture-after-finalize
@@ -27,58 +33,49 @@
     (emacs-todoist-org-capture-install-template)
     (should (= 1 (length org-capture-templates)))))
 
-(ert-deftest emacs-todoist-org-capture/after-finalize-dispatches-marker ()
-  "Finalize hook dispatches stored marker ownership within capture module."
+(ert-deftest emacs-todoist-org-capture/after-finalize-pushes-marker-directly ()
+  "Finalize hook pushes the captured heading in place."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Inbox\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\n** TODO Task\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\* TODO Task$")
+    (beginning-of-line)
+    (let ((emacs-todoist-org-capture--marker (point-marker))
+          (org-note-abort nil)
+          (push-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-push-heading)
+                 (lambda ()
+                   (setq push-called t))))
+        (emacs-todoist-org-capture-after-finalize))
+      (should push-called)
+      (should (equal "proj-1" (org-entry-get (point) "TODOIST_PROJECT")))
+      (should-not emacs-todoist-org-capture--marker))))
+
+(ert-deftest emacs-todoist-org-capture/after-finalize-ignores-aborted-capture ()
+  "Finalize hook does nothing when capture was aborted."
   (with-temp-buffer
     (org-mode)
     (insert "* TODO Task\n")
     (goto-char (point-min))
     (let ((emacs-todoist-org-capture--marker (point-marker))
-          (org-note-abort nil)
-          (seen-marker nil))
-      (cl-letf (((symbol-function 'emacs-todoist-org-capture--dispatch-finalize)
-                 (lambda (marker)
-                   (setq seen-marker marker)
-                   t)))
-        (emacs-todoist-org-capture-after-finalize))
-      (should (markerp seen-marker))
-      (should-not emacs-todoist-org-capture--marker))))
-
-(ert-deftest emacs-todoist-org-capture/process-or-push-falls-back-to-push ()
-  "Capture processing pushes in place when frontend relocation does not apply."
-  (with-temp-buffer
-    (org-mode)
-    (insert "* TODO Task\n")
-    (goto-char (point-min))
-    (let ((push-called nil))
-      (cl-letf (((symbol-function 'emacs-todoist-org-capture--process-marker)
-                 (lambda (_marker) nil))
-                ((symbol-function 'emacs-todoist-push-heading)
+          (org-note-abort t)
+          (push-called nil))
+      (cl-letf (((symbol-function 'emacs-todoist-push-heading)
                  (lambda ()
                    (setq push-called t))))
-        (emacs-todoist-org-capture--process-or-push (point-marker)))
-      (should push-called))))
+        (emacs-todoist-org-capture-after-finalize))
+      (should-not push-called)
+      (should-not emacs-todoist-org-capture--marker))))
 
-(ert-deftest emacs-todoist-org-capture/dispatch-finalize-defers-in-interactive ()
-  "Interactive finalize dispatch defers processing until command-loop continuation."
+(ert-deftest emacs-todoist-org-capture/goto-target-headline-creates-container ()
+  "Target locator creates the frontend container heading when missing."
   (with-temp-buffer
     (org-mode)
-    (insert "* TODO Task\n")
-    (goto-char (point-min))
-    (let ((noninteractive nil)
-          (processed-marker nil))
-      (setq emacs-todoist-org-capture--deferred-thunks nil)
-      (remove-hook 'post-command-hook #'emacs-todoist-org-capture--flush-deferred)
-      (unwind-protect
-          (cl-letf (((symbol-function 'emacs-todoist-org-capture--process-or-push)
-                     (lambda (marker)
-                       (setq processed-marker marker))))
-            (emacs-todoist-org-capture--dispatch-finalize (point-marker))
-            (should-not processed-marker)
-            (emacs-todoist-org-capture--flush-deferred)
-            (should (markerp processed-marker)))
-        (setq emacs-todoist-org-capture--deferred-thunks nil)
-        (remove-hook 'post-command-hook #'emacs-todoist-org-capture--flush-deferred)))))
+    (let ((emacs-todoist-org-capture-project "proj-1"))
+      (emacs-todoist-org-capture--goto-target-headline)
+      (should (equal "proj-1" (org-get-heading t t t t)))
+      (should (equal "proj-1" (org-entry-get (point) "TODOIST_PROJECT"))))))
 
 (ert-deftest emacs-todoist-org-capture/no-global-after-finalize-hook ()
   "Capture module should not globally hook capture finalize behavior."

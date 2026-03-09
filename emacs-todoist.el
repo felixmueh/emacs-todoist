@@ -1194,7 +1194,7 @@ cleared."
 ;; ==============================================================================
 
 (cl-defun emacs-todoist--sync-entries
-    (linked-markers new-markers &key post-classify-fn done-fn)
+    (linked-markers new-markers &key post-classify-fn done-fn fetch-token-override)
   "Sync LINKED-MARKERS (existing) and NEW-MARKERS (to push) with Todoist.
 LINKED-MARKERS are markers for headings that already have a TODOIST_ID.
 NEW-MARKERS are markers for headings without a TODOIST_ID to push as
@@ -1206,6 +1206,12 @@ plist and should return the number of additionally inserted headings.
 
 DONE-FN, when non-nil, is called with a summary plist after a successful
 sync pass (or no-op sync).
+
+FETCH-TOKEN-OVERRIDE, when non-nil, replaces the normal batch-token
+selection logic for the fetch phase.  This exists for frontend bootstrap:
+a frontend file can be seeded by a freshly captured heading whose stored
+`TODOIST_SYNC_TOKEN' would otherwise force an incremental fetch and miss
+older remote items that have never been rendered locally.
 
 The flow:
 1. If NEW-MARKERS non-nil, ensure the project cache is populated.
@@ -1228,17 +1234,23 @@ The flow:
                linked-markers new-markers
                :post-classify-fn post-classify-fn
                :done-fn done-fn
+               :fetch-token-override fetch-token-override
                :target-buffer origin-buffer))))
       (if new-markers
           (emacs-todoist--ensure-projects continue-fn)
         (funcall continue-fn)))))
 
 (cl-defun emacs-todoist--sync-entries-1
-    (linked-markers new-markers &key post-classify-fn done-fn target-buffer)
+    (linked-markers new-markers
+                    &key post-classify-fn done-fn target-buffer fetch-token-override)
   "Internal continuation for `emacs-todoist--sync-entries'.
 Called after project cache is ensured.  LINKED-MARKERS and NEW-MARKERS
 are as in the parent function.  TARGET-BUFFER is the Org buffer that
-requested sync and is used for post-classification hooks."
+requested sync and is used for post-classification hooks.
+
+When FETCH-TOKEN-OVERRIDE is non-nil, use it as the fetch token instead
+of deriving one from heading properties.  The frontend uses this to force
+an initial `*' fetch before switching to incremental sync tokens."
   (if (and (null linked-markers) (null post-classify-fn))
       ;; No linked headings — skip fetch, go straight to pushing new ones.
       (emacs-todoist--sync-entries-push
@@ -1251,11 +1263,17 @@ requested sync and is used for post-classification hooks."
                           (or (org-entry-get (point) "TODOIST_SYNC_TOKEN") "*"))))
                     linked-markers))
            (batch-token
-            (if (null linked-markers)
-                "*"
-              (if (cl-every (lambda (tok) (equal tok (car tokens))) tokens)
-                  (car tokens)
-                "*"))))
+            (or fetch-token-override
+                ;; Normal bulk sync reuses a shared incremental token only when
+                ;; every linked heading agrees on it; otherwise fall back to a
+                ;; full fetch.  `fetch-token-override' is reserved for callers
+                ;; such as the frontend bootstrap flow that need to bypass this
+                ;; heuristic intentionally.
+                (if (null linked-markers)
+                    "*"
+                  (if (cl-every (lambda (tok) (equal tok (car tokens))) tokens)
+                      (car tokens)
+                    "*")))))
       (emacs-todoist-log 'debug "Bulk fetch with token: %s (%d headings)"
                          batch-token (length linked-markers))
       (emacs-todoist-api-sync

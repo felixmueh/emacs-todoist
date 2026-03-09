@@ -11,7 +11,9 @@
 ;;
 ;; Provides `emacs-todoist-open' to render Todoist tasks into an
 ;; file-backed org-mode buffer grouped by project, plus
-;; `emacs-todoist-frontend-sync' for incremental refresh.
+;; `emacs-todoist-frontend-sync' for incremental refresh.  A frontend file
+;; seeded by direct capture always performs one full bootstrap sync before
+;; switching to incremental tokens so older remote tasks are not missed.
 
 ;;; Code:
 
@@ -20,8 +22,8 @@
 (require 'cl-lib)
 (require 'emacs-todoist)
 
-(defcustom emacs-todoist-frontend-buffer-name "todoist.org"
-  "Name of the file-backed Todoist frontend Org buffer."
+(defcustom emacs-todoist-frontend-file-name "todoist.org"
+  "File name for the file-backed Todoist frontend Org buffer."
   :type 'string
   :group 'emacs-todoist)
 
@@ -37,13 +39,16 @@
 (defvar-local emacs-todoist--frontend-suppress-sync-after-save nil
   "Internal guard to suppress sync-on-save for programmatic saves.")
 
+(defvar-local emacs-todoist--frontend-bootstrap-complete nil
+  "Non-nil after this frontend buffer has completed its initial full sync.")
+
 (defun emacs-todoist--frontend-file-path ()
   "Return the absolute path for the frontend file-backed Org buffer."
   (let ((dir (if (and (stringp org-directory)
                       (> (length org-directory) 0))
                  org-directory
                (expand-file-name "~/org"))))
-    (expand-file-name emacs-todoist-frontend-buffer-name dir)))
+    (expand-file-name emacs-todoist-frontend-file-name dir)))
 
 (defun emacs-todoist--frontend-clear-transient-overlays ()
   "Remove transient snippet overlays that can leak into frontend rendering."
@@ -310,6 +315,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                     #'emacs-todoist--frontend-project-fn)
                    (emacs-todoist--apply-items nested-items sync-token id-map)
                    (goto-char (point-min))
+                   (setq-local emacs-todoist--frontend-bootstrap-complete t)
                    (emacs-todoist--frontend-save-buffer)
                    (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
@@ -317,7 +323,11 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 (defun emacs-todoist-frontend-sync (&optional done-fn)
   "Incrementally sync the current frontend buffer from Todoist.
 When DONE-FN is non-nil, call it with a sync summary plist after
-successful sync completion."
+successful sync completion.
+
+The first sync in a frontend buffer always uses a full `*' fetch so a
+capture-seeded file cannot get stuck with only the most recently synced
+heading visible."
   (interactive)
   (unless emacs-todoist-frontend-mode
     (user-error "Not in an emacs-todoist frontend buffer"))
@@ -327,13 +337,20 @@ successful sync completion."
     (setq-local emacs-todoist--frontend-id-to-name
                 (emacs-todoist--frontend-seed-id-to-name-from-cache)))
   (let ((linked-markers (emacs-todoist-org-synced-entries))
+        ;; A frontend file can be seeded by direct capture, which may leave
+        ;; one freshly-synced heading with a recent token but no older remote
+        ;; tasks.  Force the first frontend refresh to use "*" so the file is
+        ;; bootstrapped from complete remote state before incremental syncs.
+        (force-full-fetch (not emacs-todoist--frontend-bootstrap-complete))
         (frontend-buf (current-buffer)))
     (emacs-todoist--sync-entries
      linked-markers nil
+     :fetch-token-override (when force-full-fetch "*")
      :post-classify-fn #'emacs-todoist--frontend-sync-post-classify
      :done-fn (lambda (summary)
                 (when (buffer-live-p frontend-buf)
                   (with-current-buffer frontend-buf
+                    (setq-local emacs-todoist--frontend-bootstrap-complete t)
                     (when buffer-file-name
                       (emacs-todoist--frontend-save-buffer))))
                 (when done-fn
