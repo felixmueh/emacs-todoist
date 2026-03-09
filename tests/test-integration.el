@@ -85,7 +85,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                                 `((sync_token . "tok-after-push")
                                   (temp_id_mapping . ((,temp-id . "real-id-999")))
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; Verify the sync call was made.
         (should (= 1 (length emacs-todoist-test--sync-calls)))
@@ -127,7 +127,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                               `((sync_token . "tok-children")
                                 (temp_id_mapping . ,mapping)
                                 (items . nil)))))))
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
 
       ;; Should have sent 3 commands: parent + 2 children.
       (let* ((call (car emacs-todoist-test--sync-calls))
@@ -169,7 +169,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                      (description . "Updated description.")
                      (due . ((date . "2026-03-01")))
                      (checked . 0)))))
-      (emacs-todoist-sync-heading))
+      (emacs-todoist-sync-single-heading))
 
     ;; The heading should now have the remote data applied.
     (should (equal "Buy organic groceries" (emacs-todoist-org-heading-title)))
@@ -212,7 +212,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                        (funcall callback
                                 `((sync_token . "final-token")
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; Two sync calls: one fetch, one push.
         (should (= 2 (length emacs-todoist-test--sync-calls)))
@@ -367,7 +367,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                                              (description . "Same as before.")
                                              (due)
                                              (checked . 0)))))))))
-            (emacs-todoist-sync-heading))
+            (emacs-todoist-sync-single-heading))
 
           ;; Only one sync call (the fetch), no push needed.
           (should (= 1 (length emacs-todoist-test--sync-calls)))
@@ -409,7 +409,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                                          (due)
                                          (checked . 0)))))))))
         (setq emacs-todoist-test--sync-calls nil)
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
       (should-not pull-called)
       (should (= 1 (length emacs-todoist-test--sync-calls)))
       (should (null (alist-get 'commands (car emacs-todoist-test--sync-calls))))
@@ -453,7 +453,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                                          (description . "Same as before.")
                                          (due)
                                          (checked . 0)))))))))
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
       (should-not conflict-prompted)
       (should (equal "updated-token" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
 
@@ -475,7 +475,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
     (with-mock-sync
         `((sync_token . "newer-token")
           (items . nil))
-      (emacs-todoist-sync-heading))
+      (emacs-todoist-sync-single-heading))
 
     ;; Heading should still exist with updated sync token.
     (should (equal "task-42" (org-entry-get (point) "TODOIST_ID")))
@@ -508,8 +508,8 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                            (equal "item_update" (alist-get 'type cmd)))
                          commands))))))
 
-(ert-deftest emacs-todoist-integration/sync-heading-conflict-logs-both-versions ()
-  "Conflict logging includes local and remote versions for single sync."
+(ert-deftest emacs-todoist-integration/sync-single-heading-conflict-logs-both-versions ()
+  "Conflict logging includes local and remote versions for single-heading sync."
   (with-org-buffer "* TODO Local title\nLocal body\n"
     (let ((captured-logs nil)
           (pushed nil))
@@ -535,7 +535,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
                 ((symbol-function 'emacs-todoist--push-update)
                  (lambda (&rest _args)
                    (setq pushed t))))
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
       (should pushed)
       (let ((combined (mapconcat #'identity (nreverse captured-logs) "\n")))
         (should (string-match-p "Conflict detected (single) for TODOIST_ID=task-42" combined))
@@ -584,7 +584,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
   "On linked headings, set-recurrence does not auto-sync."
   (with-org-buffer "* TODO Task\n:PROPERTIES:\n:TODOIST_ID: task-1\n:END:\n"
     (let ((sync-called nil))
-      (cl-letf (((symbol-function 'emacs-todoist-sync-heading)
+      (cl-letf (((symbol-function 'emacs-todoist-sync-subtree)
                  (lambda () (setq sync-called t))))
         (emacs-todoist-set-recurrence "every month"))
       (should-not sync-called))))
@@ -593,7 +593,7 @@ Captured call arguments are stored in `emacs-todoist-test--sync-calls'."
   "On unlinked headings, set-recurrence does not trigger sync."
   (with-org-buffer "* TODO Task\n"
     (let ((sync-called nil))
-      (cl-letf (((symbol-function 'emacs-todoist-sync-heading)
+      (cl-letf (((symbol-function 'emacs-todoist-sync-subtree)
                  (lambda () (setq sync-called t))))
         (emacs-todoist-set-recurrence "every month"))
       (should-not sync-called))))
@@ -714,7 +714,7 @@ was silently ignored, leaving TODOIST_ID blank."
                                                           (error_code . 22)))))
                                 (temp_id_mapping . nil)
                                 (items . nil)))))))
-        (emacs-todoist-sync-heading)))
+        (emacs-todoist-sync-single-heading)))
 
     ;; TODOIST_ID should NOT have been set.
     (should (null (org-entry-get (point) "TODOIST_ID")))
@@ -764,7 +764,7 @@ defensive check that shouldn't happen in practice."
                                 (temp_id_mapping . nil)
                                 (items . nil)))))))
         ;; The callback should signal an error about missing ID.
-        (should-error (emacs-todoist-sync-heading))))
+        (should-error (emacs-todoist-sync-single-heading))))
 
     ;; TODOIST_ID should NOT have been set.
     (should (null (org-entry-get (point) "TODOIST_ID")))))
@@ -831,7 +831,7 @@ defensive check that shouldn't happen in practice."
                                 `((sync_token . "tok-resolved")
                                   (temp_id_mapping . ((,temp-id . "real-id-42")))
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; The item_add command should have the numeric project ID,
         ;; not the human-readable name.
@@ -862,7 +862,7 @@ defensive check that shouldn't happen in practice."
                                 `((sync_token . "tok-passthrough")
                                   (temp_id_mapping . ((,temp-id . "real-999")))
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; The numeric ID string should pass through as-is.
         (let* ((commands (car sync-calls))
@@ -886,7 +886,7 @@ defensive check that shouldn't happen in practice."
                                 `((sync_token . "tok-nil")
                                   (temp_id_mapping . ((,temp-id . "real-nil")))
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; project_id should be absent from the args.
         (let* ((commands (car sync-calls))
@@ -916,7 +916,7 @@ defensive check that shouldn't happen in practice."
                                 (temp_id_mapping . ((,temp-id . "real-reuse")))
                                 (items . nil)))))))
         ;; First push: should fetch projects.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
         (should (= 1 fetch-count)))
 
       ;; Set up a second heading to push in the same buffer.
@@ -940,7 +940,7 @@ defensive check that shouldn't happen in practice."
                                 (temp_id_mapping . ((,temp-id . "real-reuse-2")))
                                 (items . nil)))))))
         ;; Second push: should NOT fetch projects again.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
         (should (= 1 fetch-count))))))
 
 ;; ==============================================================================
@@ -1323,16 +1323,43 @@ defensive check that shouldn't happen in practice."
       (should (string-prefix-p "real-" (org-entry-get (point) "TODOIST_ID"))))))
 
 ;; ==============================================================================
-;; Sync heading with children — remote completion
+;; Single-heading and subtree remote completion
 ;; ==============================================================================
 
-(ert-deftest emacs-todoist-integration/sync-parent-completed-remotely-no-conflict ()
-  "Syncing a parent completed remotely should pull cleanly, not report a conflict.
+(ert-deftest emacs-todoist-integration/remote-apply-done-bypasses-org-blockers ()
+  "Accepted remote DONE state bypasses Org TODO dependency blockers."
+  (with-org-buffer "* TODO parent\n** TODO child\n"
+    (let ((org-enforce-todo-dependencies t)
+          (parent-remote '((content . "parent")
+                           (description . "")
+                           (due . nil)
+                           (checked . 1)))
+          (child-remote '((content . "child")
+                          (description . "")
+                          (due . nil)
+                          (checked . 1))))
+      (unwind-protect
+          (progn
+            ;; Match the blocker hook used by `org-enforce-todo-dependencies'.
+            (add-hook 'org-blocker-hook
+                      #'org-block-todo-from-children-or-siblings-or-parent)
+            (emacs-todoist-org-apply-remote parent-remote)
+            (should (equal "DONE" (org-get-todo-state)))
+            (save-excursion
+              (org-goto-first-child)
+              (should (equal "TODO" (org-get-todo-state))))
+            (save-excursion
+              (org-goto-first-child)
+              (emacs-todoist-org-apply-remote child-remote)
+              (should (equal "DONE" (org-get-todo-state)))))
+        (remove-hook 'org-blocker-hook
+                     #'org-block-todo-from-children-or-siblings-or-parent)))))
+
+(ert-deftest emacs-todoist-integration/sync-single-heading-parent-completed-remotely-no-conflict ()
+  "Single-heading sync should pull parent completion without a conflict.
 Reproduces a bug where syncing a parent with a child heading falsely
 detected a conflict (local-changed was true) even though the org buffer
-was unmodified.  Also verifies that children are synced before the
-parent so that `org-enforce-todo-dependencies' does not block the
-parent's state change."
+was unmodified."
   (with-org-buffer "* TODO test1\n** TODO test2\n"
     ;; Enable the blocker hook that org-enforce-todo-dependencies uses.
     ;; Setting the variable alone doesn't activate the :set function in
@@ -1400,19 +1427,85 @@ parent's state change."
                    (lambda (_prompt _chars)
                      (setq conflict-prompted t)
                      ?r)))
-          (emacs-todoist-sync-heading))
+          (emacs-todoist-sync-single-heading))
 
         ;; No conflict should have been prompted.
         (should-not conflict-prompted))
 
       ;; Parent should now be DONE.
       (should (equal "DONE" (org-get-todo-state)))
-      ;; Child should also be DONE (cascaded from Todoist).
+      ;; Single-heading sync does not reconcile descendants.
       (save-excursion
         (org-goto-first-child)
-        (should (equal "DONE" (org-get-todo-state))))
-      ;; Sync token should be updated on both headings.
+        (should (equal "TODO" (org-get-todo-state))))
+      ;; Sync token should be updated on the synced heading.
       (should (equal "tok-1" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))))
+
+(ert-deftest emacs-todoist-integration/sync-subtree-parent-completed-remotely-no-conflict ()
+  "Subtree sync cleanly accepts remote completion for parent and child."
+  (with-org-buffer "* TODO test1\n** TODO test2\n"
+    (unwind-protect
+        (progn
+          (add-hook 'org-blocker-hook
+                    #'org-block-todo-from-children-or-siblings-or-parent)
+          (let* ((parent-local-hash (emacs-todoist-org-heading-local-hash))
+                 (parent-remote-item `((content . "test1")
+                                       (description . "")
+                                       (due . nil)
+                                       (checked . 0)))
+                 (parent-remote-hash (emacs-todoist-api-hash-item
+                                      parent-remote-item)))
+            (emacs-todoist-org-set-props
+             `(("TODOIST_ID"          . "parent-1")
+               ("TODOIST_LOCAL_HASH"  . ,parent-local-hash)
+               ("TODOIST_REMOTE_HASH" . ,parent-remote-hash)
+               ("TODOIST_SYNC_TOKEN"  . "tok-0")))
+            (save-excursion
+              (org-goto-first-child)
+              (let* ((child-local-hash (emacs-todoist-org-heading-local-hash))
+                     (child-remote-item `((content . "test2")
+                                          (description . "")
+                                          (due . nil)
+                                          (checked . 0)))
+                     (child-remote-hash (emacs-todoist-api-hash-item
+                                         child-remote-item)))
+                (emacs-todoist-org-set-props
+                 `(("TODOIST_ID"          . "child-1")
+                   ("TODOIST_LOCAL_HASH"  . ,child-local-hash)
+                   ("TODOIST_REMOTE_HASH" . ,child-remote-hash)
+                   ("TODOIST_SYNC_TOKEN"  . "tok-0"))))))
+          (let ((conflict-prompted nil))
+            (with-mock-sync nil
+              (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                         (lambda (sync-token _resource-types commands callback)
+                           (push (list (cons 'sync-token sync-token)
+                                       (cons 'commands commands))
+                                 emacs-todoist-test--sync-calls)
+                           (funcall callback
+                                    `((sync_token . "tok-1")
+                                      (items . (((id . "parent-1")
+                                                 (content . "test1")
+                                                 (description . "")
+                                                 (due . nil)
+                                                 (checked . 1))
+                                                ((id . "child-1")
+                                                 (content . "test2")
+                                                 (description . "")
+                                                 (due . nil)
+                                                 (checked . 1))))))))
+                        ((symbol-function 'read-char-choice)
+                         (lambda (_prompt _chars)
+                           (setq conflict-prompted t)
+                           ?r)))
+                (emacs-todoist-sync-subtree))
+              (should-not conflict-prompted)))
+          (should (equal "DONE" (org-get-todo-state)))
+          (save-excursion
+            (org-goto-first-child)
+            (should (equal "DONE" (org-get-todo-state))))
+          (should (equal "tok-1" (org-entry-get (point) "TODOIST_SYNC_TOKEN"))))
+      (remove-hook 'org-blocker-hook
+                   #'org-block-todo-from-children-or-siblings-or-parent))))
 
 (ert-deftest emacs-todoist-integration/pull-parent-preserves-child-properties ()
   "Pulling remote changes to parent must not remove child heading properties.
@@ -1475,7 +1568,7 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
                        (funcall callback
                                 '((sync_token . "tok-push")
                                   (items . nil)))))))
-          (emacs-todoist-sync-heading)))
+          (emacs-todoist-sync-single-heading)))
       (should (equal "DONE" (org-get-todo-state)))
       (should-not (org-entry-get (point) "TODOIST_ID"))
       (should-not (org-entry-get (point) "TODOIST_LOCAL_HASH"))
@@ -1505,7 +1598,7 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
                        (project_id . "proj-1")
                        (due . nil)
                        (checked . 1)))))
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
       (goto-char (point-min))
       (should-not (re-search-forward "^\\*" nil t)))))
 
@@ -1537,6 +1630,22 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
         (emacs-todoist-mode 1)
         (org-todo "DONE")
         (should (= 2 sync-call-count))))))
+
+(ert-deftest emacs-todoist-integration/remote-apply-does-not-trigger-auto-sync ()
+  "Remote apply changes TODO state textually without triggering auto-sync."
+  (with-org-buffer "* TODO Task\n"
+    (let ((sync-called nil))
+      (emacs-todoist-mode 1)
+      (cl-letf (((symbol-function 'emacs-todoist-sync-subtree)
+                 (lambda ()
+                   (setq sync-called t))))
+        (emacs-todoist-org-apply-remote
+         '((content . "Task")
+           (description . "")
+           (due . nil)
+           (checked . 1))))
+      (should (equal "DONE" (org-get-todo-state)))
+      (should-not sync-called))))
 
 (ert-deftest emacs-todoist-integration/capture-finalize-pushes-in-place ()
   "Capture finalize now pushes the heading directly in the frontend file."

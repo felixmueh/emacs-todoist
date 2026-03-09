@@ -20,7 +20,8 @@
 ;; the user is prompted to choose.
 ;;
 ;; Interactive commands:
-;;   `emacs-todoist-sync-heading'  — Smart sync: detect + push/pull/conflict
+;;   `emacs-todoist-sync-subtree'  — Smart sync for the current subtree
+;;   `emacs-todoist-sync-single-heading' — Smart sync for one heading only
 ;;   `emacs-todoist-push-heading'  — Force push (ignore remote)
 ;;   `emacs-todoist-pull-heading'  — Force pull (ignore local)
 ;;   `emacs-todoist-sync-buffer'   — Bulk sync all linked headings (C-u: +new)
@@ -43,7 +44,7 @@
 ;;   9. Push update (existing task, async)
 ;;  10. Pull remote changes
 ;;  11. Handle remote deletion
-;;  12. Core sync logic (single heading)
+;;  12. User-facing smart sync commands
 ;;  13. Force push / force pull
 ;;  14. Bulk sync core (classify → push → writeback pipeline)
 ;;  15. User-facing bulk sync commands
@@ -136,7 +137,7 @@ When this variable is buffer-local, it overrides
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-auto-sync-on-todo-change t
-  "When non-nil, `emacs-todoist-mode' auto-syncs on TODO state changes."
+  "When non-nil, `emacs-todoist-mode' auto-syncs the current subtree on TODO changes."
   :type 'boolean
   :group 'emacs-todoist)
 
@@ -157,12 +158,6 @@ When this variable is buffer-local, it overrides
 (defconst emacs-todoist--sync-state-property-keys
   '("TODOIST_ID" "TODOIST_LOCAL_HASH" "TODOIST_REMOTE_HASH" "TODOIST_SYNC_TOKEN")
   "Todoist sync-state properties written by successful sync operations.")
-
-(defvar emacs-todoist--suppress-auto-sync nil
-  "Internal recursion guard for TODO-state auto sync.")
-
-(defvar emacs-todoist--auto-sync-in-progress nil
-  "Non-nil while `emacs-todoist-mode' is processing an auto-sync hook.")
 
 (defun emacs-todoist-log (level fmt &rest args)
   "Log a message at LEVEL using format string FMT and ARGS.
@@ -219,19 +214,18 @@ timestamped and written to `emacs-todoist-log-buffer-name'."
               (_ nil))))))))
 
 (defun emacs-todoist--auto-sync-todo-state-change ()
-  "Auto-sync the current heading after TODO state changes."
+  "Auto-sync the current subtree after TODO state changes."
   (when (and emacs-todoist-mode
              emacs-todoist-auto-sync-on-todo-change
-             (not emacs-todoist--suppress-auto-sync)
-             (not emacs-todoist--auto-sync-in-progress)
              (org-get-todo-state))
-    (let ((emacs-todoist--auto-sync-in-progress t))
-      (emacs-todoist-sync-heading))))
+    (emacs-todoist-sync-subtree)))
 
 (define-minor-mode emacs-todoist-mode
   "Minor mode for automatic emacs-todoist behavior in Org buffers.
-When enabled, TODO keyword changes trigger `emacs-todoist-sync-heading'
-when `emacs-todoist-auto-sync-on-todo-change' is non-nil."
+When enabled, TODO keyword changes trigger `emacs-todoist-sync-subtree'
+for the current subtree when `emacs-todoist-auto-sync-on-todo-change'
+is non-nil.  Use `emacs-todoist-sync-single-heading' for explicit
+heading-only syncs."
   :lighter " ETodoist"
   (if emacs-todoist-mode
       (add-hook 'org-after-todo-state-change-hook
@@ -555,8 +549,7 @@ SYNC-TOKEN is written when non-nil."
       (push (cons "TODOIST_SYNC_TOKEN" sync-token) pre-props))
     ;; Write ID before applying remote fields to keep local hash stable.
     (emacs-todoist-org-set-props (nreverse pre-props))
-    (let ((emacs-todoist--suppress-auto-sync t))
-      (emacs-todoist-org-apply-remote item))
+    (emacs-todoist-org-apply-remote item)
     (let ((post-props
            `(("TODOIST_LOCAL_HASH"  . ,(emacs-todoist-org-heading-local-hash))
              ("TODOIST_REMOTE_HASH" . ,(emacs-todoist-api-hash-item item)))))
@@ -930,8 +923,7 @@ When SILENT is non-nil, suppress user-facing log/message chatter."
 
     (save-excursion
       (goto-char marker)
-      (let ((emacs-todoist--suppress-auto-sync t))
-        (emacs-todoist-org-apply-remote remote-item))
+      (emacs-todoist-org-apply-remote remote-item)
       ;; After applying remote data, recompute both hashes.  The local
       ;; hash now reflects the updated heading, and the remote hash
       ;; reflects the item we just applied.
@@ -946,37 +938,6 @@ When SILENT is non-nil, suppress user-facing log/message chatter."
     (unless silent
       (emacs-todoist-log 'info "Pulled remote changes for: %s" title)
       (message "emacs-todoist: pulled remote changes for \"%s\"" title))))
-
-(defun emacs-todoist--sync-children (items sync-token)
-  "Sync existing descendants of the heading at point using remote ITEMS.
-Only updates headings that already exist in the current subtree.  It
-does not insert missing remote items during single-heading sync."
-  (let* ((root-id (org-entry-get (point) "TODOIST_ID"))
-         (id-map (emacs-todoist--build-id-map-from-markers
-                  (emacs-todoist-org-synced-entries-in-subtree)))
-         ;; Keep parent handling in `emacs-todoist-sync-heading' so
-         ;; child updates happen before parent state transitions.
-         (child-items
-          (cl-remove-if
-           (lambda (item)
-             (equal (emacs-todoist--item-id item) root-id))
-           items))
-         ;; `sync-heading' should not materialize new remote tasks in the
-         ;; local outline.  Restrict to headings that already exist.
-         (existing-child-items
-          (cl-remove-if-not
-           (lambda (item)
-             (and-let* ((item-id (emacs-todoist--item-id item)))
-               (gethash item-id id-map)))
-           child-items)))
-    (emacs-todoist--apply-items
-     (emacs-todoist--topological-sort-items existing-child-items)
-     sync-token
-     id-map)))
-
-;; ==============================================================================
-;; Handle remote deletion
-;; ==============================================================================
 
 (defun emacs-todoist--handle-deletion ()
   "Handle a task that was deleted on Todoist.
@@ -1008,116 +969,83 @@ Prompts the user with three choices:
        (message "emacs-todoist: unlinked \"%s\" from Todoist" title)))))
 
 ;; ==============================================================================
-;; Core sync logic
+;; User-facing smart sync commands
 ;; ==============================================================================
 
-(defun emacs-todoist-sync-heading ()
-  "Sync the org heading at point with Todoist.
-This is the main entry point.  It detects whether the heading is new
-or existing, checks for local and remote changes, and dispatches to
-the appropriate push/pull/conflict handler."
+(defun emacs-todoist-sync-single-heading ()
+  "Sync only the org heading at point with Todoist.
+This command does not walk or reconcile descendant headings.  It
+detects whether the current heading is new or existing, checks for
+local and remote changes, and dispatches to the appropriate
+push/pull/conflict handler."
   (interactive)
   (org-back-to-heading t)
-
-  (let* ((props       (emacs-todoist-org-heading-props))
-         (todoist-id  (alist-get "TODOIST_ID" props nil nil #'equal))
-         (stored-local-hash  (alist-get "TODOIST_LOCAL_HASH" props nil nil #'equal))
+  (let* ((props (emacs-todoist-org-heading-props))
+         (todoist-id (alist-get "TODOIST_ID" props nil nil #'equal))
+         (stored-local-hash (alist-get "TODOIST_LOCAL_HASH" props nil nil #'equal))
          (stored-remote-hash (alist-get "TODOIST_REMOTE_HASH" props nil nil #'equal))
-         (stored-sync-token  (alist-get "TODOIST_SYNC_TOKEN" props nil nil #'equal))
+         (stored-sync-token (alist-get "TODOIST_SYNC_TOKEN" props nil nil #'equal))
          (current-local-hash (emacs-todoist-org-heading-local-hash)))
-
     (if (null todoist-id)
-        ;; No TODOIST_ID → this is a new heading, push it.
         (emacs-todoist--push-new-heading)
-
-      ;; Existing task: fetch remote state, then compare hashes.
       (let ((local-changed (not (equal current-local-hash stored-local-hash)))
             (marker (point-marker))
-            ;; Use stored sync token for incremental fetch, or "*" for
-            ;; full sync if we don't have one yet.
             (fetch-token (or stored-sync-token "*")))
-
         (emacs-todoist-log 'debug "Fetching remote state for %s (token: %s)"
                            todoist-id fetch-token)
-
         (emacs-todoist-api-sync
          fetch-token '("items") nil
          (lambda (response)
            (if (alist-get 'error response)
                (emacs-todoist-log 'error "Fetch error: %s"
                                   (alist-get 'error response))
-
              (let* ((new-sync-token (alist-get 'sync_token response))
-                    (items          (alist-get 'items response))
-                    ;; Find this task in the returned items.
+                    (items (alist-get 'items response))
                     (remote-item
                      (emacs-todoist--find-item-by-id items todoist-id))
                     remote-changed)
-
                (with-current-buffer (marker-buffer marker)
                  (save-excursion
                    (goto-char marker)
-
-                   (cond
-                    ;; Task found in response: compute whether remote changed.
-                    (remote-item
-                     (let ((remote-hash (emacs-todoist-api-hash-item remote-item)))
-                       (setq remote-changed
-                             (not (equal remote-hash stored-remote-hash)))
-
-                       (cond
-                        ;; Neither side changed.
-                        ((and (not local-changed) (not remote-changed))
+                   (if remote-item
+                       (let ((remote-hash (emacs-todoist-api-hash-item remote-item)))
+                         (setq remote-changed
+                               (not (equal remote-hash stored-remote-hash)))
+                         (cond
+                          ((and (not local-changed) (not remote-changed))
+                           (emacs-todoist-org-set-props
+                            `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
+                           (emacs-todoist-log 'info "Already up to date: %s" todoist-id)
+                           (message "emacs-todoist: already up to date"))
+                          ((and (not local-changed) remote-changed)
+                           (emacs-todoist--apply-pull remote-item new-sync-token))
+                          ((and local-changed (not remote-changed))
+                           (emacs-todoist--push-update
+                            todoist-id stored-sync-token new-sync-token))
+                          (t
+                           (emacs-todoist--log-conflict-debug
+                            'single todoist-id remote-item
+                            current-local-hash stored-local-hash
+                            remote-hash stored-remote-hash)
+                           (pcase
+                               (read-char-choice
+                                "Conflict: both local and remote changed. Use [l]ocal or [r]emote? "
+                                '(?l ?r))
+                             (?l
+                              (emacs-todoist--push-update
+                               todoist-id stored-sync-token new-sync-token))
+                             (?r
+                              (emacs-todoist--apply-pull
+                               remote-item new-sync-token))))))
+                     (if (equal fetch-token "*")
+                         (emacs-todoist--handle-deletion)
+                       (if local-changed
+                           (emacs-todoist--push-update
+                            todoist-id stored-sync-token new-sync-token)
                          (emacs-todoist-org-set-props
                           `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
                          (emacs-todoist-log 'info "Already up to date: %s" todoist-id)
-                         (message "emacs-todoist: already up to date"))
-
-                        ;; Only remote changed → pull.
-                        ;; Sync children first so that completing a parent
-                        ;; is not blocked by `org-enforce-todo-dependencies'
-                        ;; when children are still TODO.
-                        ((and (not local-changed) remote-changed)
-                         (emacs-todoist--sync-children items new-sync-token)
-                         (emacs-todoist--apply-pull remote-item new-sync-token))
-
-                        ;; Only local changed → push.
-                        ((and local-changed (not remote-changed))
-                         (emacs-todoist--push-update
-                          todoist-id stored-sync-token new-sync-token))
-
-                        ;; Both changed → conflict.
-                        (t
-                         (emacs-todoist--log-conflict-debug
-                          'single todoist-id remote-item
-                          current-local-hash stored-local-hash
-                          remote-hash stored-remote-hash)
-                         (let ((choice
-                                (read-char-choice
-                                 "Conflict: both local and remote changed. Use [l]ocal or [r]emote? "
-                                 '(?l ?r))))
-                           (pcase choice
-                             (?l (emacs-todoist--push-update
-                                  todoist-id stored-sync-token new-sync-token))
-                             (?r (emacs-todoist--sync-children
-                                  items new-sync-token)
-                                 (emacs-todoist--apply-pull
-                                  remote-item new-sync-token))))))))
-
-                    ;; Task not found and we did a full sync → deleted remotely.
-                    ((equal fetch-token "*")
-                     (emacs-todoist--handle-deletion))
-
-                    ;; Task not found but incremental sync → task wasn't in
-                    ;; the delta, meaning it's unchanged on the remote side.
-                    (t
-                     (if local-changed
-                         (emacs-todoist--push-update
-                          todoist-id stored-sync-token new-sync-token)
-                       (emacs-todoist-org-set-props
-                        `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
-                       (emacs-todoist-log 'info "Already up to date: %s" todoist-id)
-                       (message "emacs-todoist: already up to date"))))))))))))))
+                         (message "emacs-todoist: already up to date"))))))))))))))
 
 ;; ==============================================================================
 ;; Force push / force pull commands
@@ -1322,7 +1250,7 @@ is where post-classification hooks run."
                      (remote-changed (not (equal remote-hash stored-remote-hash))))
                 (cond
                  ((and (not local-changed) (not remote-changed))
-                  (emacs-todoist-org-set-props
+                 (emacs-todoist-org-set-props
                    `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
                   (cl-incf skipped))
                  ((and (not local-changed) remote-changed)

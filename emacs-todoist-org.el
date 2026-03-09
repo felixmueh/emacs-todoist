@@ -106,6 +106,29 @@ planning lines, and sub-headings.  Returns \"\" when there is no body."
   "Return the TODO state string at point, or nil if none."
   (org-get-todo-state))
 
+(defun emacs-todoist-set-todo-state (state)
+  "Set heading TODO STATE by editing the headline text directly.
+Does not call `org-todo' on purpose.  emacs-todoist uses this for
+accepted remote state so Org's TODO transition machinery and
+`org-after-todo-state-change-hook' are not invoked.
+
+STATE should be a TODO keyword string like \"TODO\" or \"DONE\".
+When STATE is nil, any existing TODO keyword is removed."
+  (org-back-to-heading t)
+  (let ((current-state (org-get-todo-state))
+        (line-end (line-end-position)))
+    (save-excursion
+      (beginning-of-line)
+      (re-search-forward "^\\*+\\s-*" line-end t)
+      (cond
+       (current-state
+        (when (re-search-forward
+               (concat "\\_<" (regexp-quote current-state) "\\_>\\s-*")
+               line-end t)
+          (replace-match (if state (concat state " ") "") t t)))
+       (state
+        (insert state " "))))))
+
 ;; ==============================================================================
 ;; Todoist property management
 ;; ==============================================================================
@@ -262,14 +285,15 @@ DATA keys:
       (when new-title
         (org-edit-headline new-title)))
     ;; -- Update TODO state --
-    ;; `checked' = 1 means the task is done in Todoist.  The API may
-    ;; return `:json-false' for unchecked tasks instead of 0.
+    ;; `checked' = 1 means the task is done in Todoist.  Apply accepted
+    ;; remote state textually so Org TODO blockers/hooks do not veto or
+    ;; retrigger sync.
     (let* ((checked (alist-get 'checked data))
            (target-state (if (and checked
                                   (not (eq checked :json-false))
                                   (not (equal checked 0)))
                              "DONE" "TODO")))
-      (org-todo target-state))
+      (emacs-todoist-set-todo-state target-state))
     ;; -- Update deadline --
     (let* ((due (alist-get 'due data))
            (date-str (and due (alist-get 'date due))))

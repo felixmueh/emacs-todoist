@@ -147,6 +147,32 @@ Point is placed at the first heading."
   (with-org-buffer "* Buy groceries\n"
     (should (null (emacs-todoist-org-heading-todo-state)))))
 
+(ert-deftest emacs-todoist-org-set-todo-state-replaces-keyword ()
+  "set-todo-state updates the keyword textually."
+  (with-org-buffer "* TODO Buy groceries\n"
+    (emacs-todoist-set-todo-state "DONE")
+    (should (equal "* DONE Buy groceries"
+                   (buffer-substring-no-properties
+                    (line-beginning-position) (line-end-position))))
+    (should (equal "DONE" (emacs-todoist-org-heading-todo-state)))))
+
+(ert-deftest emacs-todoist-org-set-todo-state-inserts-keyword ()
+  "set-todo-state inserts a missing keyword after the stars."
+  (with-org-buffer "* Buy groceries :errands:\n"
+    (emacs-todoist-set-todo-state "TODO")
+    (should (equal "* TODO Buy groceries :errands:"
+                   (buffer-substring-no-properties
+                    (line-beginning-position) (line-end-position))))
+    (should (equal "TODO" (emacs-todoist-org-heading-todo-state)))))
+
+(ert-deftest emacs-todoist-org-set-todo-state-preserves-priority-and-tags ()
+  "set-todo-state preserves other headline syntax."
+  (with-org-buffer "* TODO [#A] Buy groceries :errands:\n"
+    (emacs-todoist-set-todo-state "DONE")
+    (should (equal "* DONE [#A] Buy groceries :errands:"
+                   (buffer-substring-no-properties
+                    (line-beginning-position) (line-end-position))))))
+
 ;; ==============================================================================
 ;; Properties
 ;; ==============================================================================

@@ -261,11 +261,11 @@
                      (emacs-todoist-org-heading-local-hash))))))
 
 ;; ==============================================================================
-;; sync-heading child insertion
+;; single-heading sync descendant behavior
 ;; ============================================================================== 
 
-(ert-deftest emacs-todoist-frontend/sync-children-does-not-insert-missing ()
-  "sync-heading does not insert missing remote items into local subtree."
+(ert-deftest emacs-todoist-frontend/sync-single-heading-does-not-insert-missing-children ()
+  "Single-heading sync does not insert missing remote descendants."
   (emacs-todoist-test-with-org-buffer "* TODO Parent\n"
     (let* ((local-hash (emacs-todoist-org-heading-local-hash))
            (base-remote
@@ -300,13 +300,13 @@
       (cl-letf (((symbol-function 'emacs-todoist-api-sync)
                  (lambda (_sync-token _resource-types _commands callback)
                    (funcall callback response))))
-        (emacs-todoist-sync-heading))
+        (emacs-todoist-sync-single-heading))
       (goto-char (point-min))
       (should-not (re-search-forward "^\\*\\* DONE Child$" nil t))
       (should-not (re-search-forward "^\\*\\* TODO Sibling In Other Project$" nil t)))))
 
-(ert-deftest emacs-todoist-frontend/sync-children-updates-existing ()
-  "sync-heading still updates existing child headings."
+(ert-deftest emacs-todoist-frontend/sync-single-heading-does-not-update-existing-children ()
+  "Single-heading sync leaves existing child headings untouched."
   (emacs-todoist-test-with-org-buffer
       "* TODO Parent\n:PROPERTIES:\n:TODOIST_ID: p1\n:TODOIST_SYNC_TOKEN: tok-0\n:END:\n** TODO Child\n:PROPERTIES:\n:TODOIST_ID: c1\n:TODOIST_REMOTE_HASH: stale\n:TODOIST_SYNC_TOKEN: tok-0\n:END:\n"
     (goto-char (point-min))
@@ -329,9 +329,10 @@
                  (lambda (_sync-token _resource-types _commands callback)
                    (funcall callback response))))
         (goto-char (point-min))
-        (emacs-todoist-sync-heading)))
+        (emacs-todoist-sync-single-heading)))
     (goto-char (point-min))
-    (should (re-search-forward "^\\*\\* DONE Child Updated$" nil t))))
+    (should (re-search-forward "^\\*\\* TODO Child$" nil t))
+    (should-not (re-search-forward "^\\*\\* DONE Child Updated$" nil t))))
 
 ;; ==============================================================================
 ;; Frontend buffer
@@ -628,8 +629,8 @@
           (should (re-search-forward "^\\*\\* TODO Older Remote$" nil t))
           (should emacs-todoist--frontend-bootstrap-complete))))))
 
-(ert-deftest emacs-todoist-frontend/sync-heading-works ()
-  "After frontend render, sync-heading on unchanged entry does not push."
+(ert-deftest emacs-todoist-frontend/sync-single-heading-works ()
+  "After frontend render, single-heading sync on unchanged entry does not push."
   (emacs-todoist-test-with-clean-frontend
     (let ((sync-calls nil))
       (cl-letf (((symbol-function 'emacs-todoist-api-sync)
@@ -653,7 +654,7 @@
           (re-search-forward "^\\*\\* TODO Top TODO$")
           (beginning-of-line)
           (setq sync-calls nil)
-          (emacs-todoist-sync-heading)
+          (emacs-todoist-sync-single-heading)
           (should (= 1 (length sync-calls)))
           (should (null (alist-get 'commands (car sync-calls)))))))))
 

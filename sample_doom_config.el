@@ -55,7 +55,7 @@
   :after org
   :commands (emacs-todoist-open
              emacs-todoist-frontend-sync
-             emacs-todoist-sync-heading
+             emacs-todoist-sync-single-heading
              emacs-todoist-sync-buffer
              emacs-todoist-sync-subtree
              emacs-todoist-sync-region)
@@ -65,7 +65,6 @@
         emacs-todoist-default-project "Inbox"
         ;; Helpful defaults for day-to-day usage.
         emacs-todoist-auto-sync-on-todo-change t
-        emacs-todoist-capture-to-frontend t
         emacs-todoist-on-done-action nil
         ;; In frontend buffers, remove completed headings immediately.
         emacs-todoist-frontend-on-done-action 'delete-heading
@@ -79,8 +78,8 @@
         (:prefix ("n t" . "todoist")
          :desc "Open Todoist frontend" "o" #'emacs-todoist-open
          :desc "Refresh Todoist frontend" "g" #'emacs-todoist-frontend-sync
-         :desc "Sync heading" "s" #'emacs-todoist-sync-heading
-         :desc "Sync subtree" "S" #'emacs-todoist-sync-subtree
+         :desc "Sync subtree" "s" #'emacs-todoist-sync-subtree
+         :desc "Sync heading only" "h" #'emacs-todoist-sync-single-heading
          :desc "Sync buffer" "b" #'emacs-todoist-sync-buffer
          :desc "Sync region" "r" #'emacs-todoist-sync-region)))
 
@@ -89,8 +88,7 @@
   :commands (emacs-todoist-org-capture
              emacs-todoist-org-capture-install-template)
   :init
-  (setq emacs-todoist-org-capture-project "Inbox"
-        emacs-todoist-org-capture-route-to-frontend t)
+  (setq emacs-todoist-org-capture-project "Inbox")
   :config
   (emacs-todoist-org-capture-install-template t)
   (map! :leader

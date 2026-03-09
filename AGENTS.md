@@ -42,6 +42,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-org-heading-deadline` | DEADLINE as "YYYY-MM-DD" or nil |
 | `emacs-todoist-org-heading-description` | Body text (excludes drawers, planning, children) |
 | `emacs-todoist-org-heading-todo-state` | TODO state string or nil |
+| `emacs-todoist-set-todo-state` | Set heading TODO state textually without calling `org-todo` |
 | `emacs-todoist-org-heading-props` | Alist of all TODOIST_* properties |
 | `emacs-todoist-org-set-props` | Write alist of TODOIST_* properties |
 | `emacs-todoist-org-heading-local-hash` | SHA-1 of (title, deadline, due string, desc, state) |
@@ -81,7 +82,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 
 | Command | Purpose |
 |---------|---------|
-| `emacs-todoist-sync-heading` | Main sync for heading at point (detect + push/pull/conflict) |
+| `emacs-todoist-sync-single-heading` | Smart sync for heading at point only (detect + push/pull/conflict) |
 | `emacs-todoist-push-heading` | Force push heading (ignore remote state) |
 | `emacs-todoist-pull-heading` | Force pull heading (ignore local changes) |
 | `emacs-todoist-sync-buffer` | Sync all linked headings in buffer; with `C-u` also push new TODOs |
@@ -119,7 +120,6 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist--push-new-heading` | Push new heading (ensures projects, async) |
 | `emacs-todoist--push-update` | Push update for existing task |
 | `emacs-todoist--apply-pull` | Apply remote item to heading + update hashes |
-| `emacs-todoist--sync-children` | Pull cascaded changes to child headings |
 | `emacs-todoist--handle-deletion` | Prompt: delete local / re-push / unlink |
 | `emacs-todoist--sync-entries` | Bulk sync entry point (linked + new markers) |
 | `emacs-todoist--sync-entries-1` | Continuation after project cache |
@@ -201,11 +201,11 @@ emacs-todoist--sync-entries(linked-markers, new-markers)
 ## Testing
 
 ```sh
-make test              # All non-live tests (194 tests)
-make test-org          # Only org module tests (52 tests)
+make test              # All non-live tests (199 tests)
+make test-org          # Only org module tests (55 tests)
 make test-api          # Only API tests (46 tests, mocked HTTP)
-make test-integration  # Only integration tests (60 tests)
-make test-frontend     # Only frontend tests (29 tests)
+make test-integration  # Only integration tests (61 tests)
+make test-frontend     # Only frontend tests (30 tests)
 make test-live         # Live API tests (10 tests, requires token)
 
 # Filter by file and pattern:
@@ -215,15 +215,15 @@ make test FILE=test-org-capture
 
 ### Test architecture
 
-- **`tests/test-org.el`** (52 tests) — Unit tests for all
+- **`tests/test-org.el`** (55 tests) — Unit tests for all
   `emacs-todoist-org-*` functions. Uses `with-org-buffer` helper.
 - **`tests/test-api.el`** (46 tests) — Unit tests for API command
   builders, parsing, and hashing. Mocks `url-retrieve` via `cl-letf`.
-- **`tests/test-integration.el`** (60 tests) — End-to-end sync
+- **`tests/test-integration.el`** (61 tests) — End-to-end sync
   logic. Mocks `emacs-todoist-api-sync` via `with-mock-sync`. Tests
-  cover single heading sync, force push/pull, bulk sync, project
+  cover single-heading sync, force push/pull, bulk sync, project
   resolution, deletion handling, parent/child cascading, logging.
-- **`tests/test-frontend.el`** (29 tests) — Frontend rendering and
+- **`tests/test-frontend.el`** (30 tests) — Frontend rendering and
   incremental sync tests for `emacs-todoist-open` and
   `emacs-todoist-frontend-sync`, including project grouping and
   top-level insertion behavior.
@@ -262,8 +262,9 @@ permissions.
   runtime by a synchronous shim that uses
   `url-retrieve-synchronously` — necessary because batch Emacs has no
   event loop for async callbacks.
-- Each test creates tasks via the API, runs `emacs-todoist-sync-heading`
-  (or `push-heading`/`pull-heading`), then verifies org properties and
+- Each test creates tasks via the API, runs
+  `emacs-todoist-sync-single-heading` (or `push-heading`/`pull-heading`),
+  then verifies org properties and
   remote state.
 - All created tasks are deleted in an `unwind-protect` cleanup, even
   if a test fails midway.
@@ -330,7 +331,7 @@ permissions.
 
 ## Current project snapshot (2026-03-09)
 
-- Core non-live test suite: `194/194` passing.
+- Core non-live test suite: `199/199` passing.
 - Live API suite: `10/10` passing.
 - Frontend buffer is implemented and autoloaded from
   `emacs-todoist.el`.

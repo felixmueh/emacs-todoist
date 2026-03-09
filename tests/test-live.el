@@ -159,10 +159,10 @@ Point is placed at the first heading."
      ,@body))
 
 ;; ==============================================================================
-;; Test helper: synchronous sync-heading
+;; Test helper: synchronous single-heading sync
 ;; ==============================================================================
 
-;; `emacs-todoist-sync-heading' and friends use async callbacks internally.
+;; `emacs-todoist-sync-single-heading' and friends use async callbacks internally.
 ;; We mock `emacs-todoist-api-sync' to call the callback synchronously
 ;; but still make the real HTTP call via `url-retrieve-synchronously'.
 
@@ -198,7 +198,7 @@ Also sets up the API token and ensures cleanup on failure."
   "Pushing a new heading creates a task on Todoist and writes back properties."
   (with-live-sync
     (with-org-buffer "* TODO Live test task\nA description for live test.\n"
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
 
       ;; Properties should be written back.
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
@@ -226,14 +226,14 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Unchanged task\n"
       ;; Initial push.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID"))
             (hash-before (org-entry-get (point) "TODOIST_LOCAL_HASH")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
 
         ;; Re-sync without any changes.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
 
         ;; Local hash should be the same (nothing changed).
         (should (equal hash-before
@@ -251,7 +251,7 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Original title\n"
       ;; Initial push.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -260,7 +260,7 @@ Also sets up the API token and ensures cleanup on failure."
         (org-edit-headline "Updated title from Emacs")
 
         ;; Sync again — should detect local change and push.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
 
         ;; Verify on Todoist.
         (let ((remote (emacs-todoist-test-live--fetch-task todoist-id)))
@@ -277,7 +277,7 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Task for remote edit\nOriginal body.\n"
       ;; Initial push.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -289,7 +289,7 @@ Also sets up the API token and ensures cleanup on failure."
          :description "Remotely changed body.")
 
         ;; Sync — should detect remote changes and pull them.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
 
         ;; The heading should now reflect the remote changes.
         (should (equal "Remotely changed title"
@@ -306,7 +306,7 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Will be overwritten\n"
       ;; Initial push.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -334,7 +334,7 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Initial push target\n"
       ;; Initial push.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -363,7 +363,7 @@ Also sets up the API token and ensures cleanup on failure."
   (with-live-sync
     (with-org-buffer "* TODO Deadline task\nDEADLINE: <2026-09-15 Tue>\n"
       ;; Push with deadline.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -388,7 +388,7 @@ Also sets up the API token and ensures cleanup on failure."
           (format "* TODO Recurring done test\nDEADLINE: <%s>\n:PROPERTIES:\n:TODOIST_DUE_STRING: every day\n:END:\n"
                   today)
         ;; Initial push.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
         (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
           (should todoist-id)
           (push todoist-id emacs-todoist-test-live--created-ids)
@@ -396,7 +396,7 @@ Also sets up the API token and ensures cleanup on failure."
           ;; Complete locally, then sync.  For recurring tasks this should
           ;; close the current occurrence and immediately reopen the next one.
           (org-todo "DONE")
-          (emacs-todoist-sync-heading)
+          (emacs-todoist-sync-single-heading)
 
           ;; Local heading should be reopened with recurrence still present.
           (should (equal "TODO" (org-get-todo-state)))
@@ -425,7 +425,7 @@ Also sets up the API token and ensures cleanup on failure."
   "Body text syncs as the Todoist description and back."
   (with-live-sync
     (with-org-buffer "* TODO Desc task\nThis is the body text.\n"
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -442,7 +442,7 @@ Also sets up the API token and ensures cleanup on failure."
          :description "Remotely updated description.")
 
         ;; Sync back.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
         (should (equal "Remotely updated description."
                        (emacs-todoist-org-heading-description)))))))
 
@@ -458,7 +458,7 @@ requires numeric arguments."
   (with-live-sync
     (with-org-buffer "* TODO Task to complete remotely\n"
       ;; Push the heading.
-      (emacs-todoist-sync-heading)
+      (emacs-todoist-sync-single-heading)
       (let ((todoist-id (org-entry-get (point) "TODOIST_ID")))
         (should todoist-id)
         (push todoist-id emacs-todoist-test-live--created-ids)
@@ -467,7 +467,7 @@ requires numeric arguments."
         (emacs-todoist-test-live--complete-task todoist-id)
 
         ;; Re-sync — this triggers the fetch path that reads `checked'.
-        (emacs-todoist-sync-heading)
+        (emacs-todoist-sync-single-heading)
 
         ;; The heading should now be DONE.
         (should (equal "DONE" (org-get-todo-state)))))))
