@@ -594,27 +594,27 @@ the parent project container subtree.  Returns inserted heading count."
       (when-let* ((item-id (emacs-todoist--item-id item)))
         (let ((existing (gethash item-id id-map)))
           (unless (and (markerp existing) (marker-buffer existing))
-          (let ((parent-id (emacs-todoist--item-parent-id item)))
-            (when (and (not (emacs-todoist--item-completed-p item))
-                       (or (null parent-id) (not (gethash parent-id id-map))))
-              (let* ((anchor (funcall project-fn item))
-                     (project-marker
-                      (cond
-                       ((and (markerp anchor) (marker-buffer anchor)) anchor)
-                       ((integerp anchor)
+            (let ((parent-id (emacs-todoist--item-parent-id item)))
+              (when (and (not (emacs-todoist--item-completed-p item))
+                         (or (null parent-id) (not (gethash parent-id id-map))))
+                (let* ((anchor (funcall project-fn item))
+                       (project-marker
+                        (cond
+                         ((and (markerp anchor) (marker-buffer anchor)) anchor)
+                         ((integerp anchor)
+                          (save-excursion
+                            (goto-char anchor)
+                            (org-back-to-heading t)
+                            (copy-marker (point) t)))
+                         (t nil))))
+                  (when (and project-marker (marker-buffer project-marker))
+                    (let ((new-marker (emacs-todoist--insert-child-heading
+                                       project-marker)))
+                      (with-current-buffer (marker-buffer new-marker)
                         (save-excursion
-                          (goto-char anchor)
-                          (org-back-to-heading t)
-                          (copy-marker (point) t)))
-                       (t nil))))
-                (when (and project-marker (marker-buffer project-marker))
-                  (let ((new-marker (emacs-todoist--insert-child-heading
-                                     project-marker)))
-                    (with-current-buffer (marker-buffer new-marker)
-                      (save-excursion
-                        (goto-char new-marker)
-                        (emacs-todoist--upsert-item-at-point item sync-token)))
-                    (puthash item-id new-marker id-map)
+                          (goto-char new-marker)
+                          (emacs-todoist--upsert-item-at-point item sync-token)))
+                      (puthash item-id new-marker id-map)
                       (cl-incf inserted))))))))))))
 
 ;; ==============================================================================
@@ -1083,9 +1083,9 @@ Requires the heading to have a TODOIST_ID property."
            (with-current-buffer (marker-buffer marker)
              (save-excursion
                (goto-char marker)
-                 (if remote-item
-                     (emacs-todoist--apply-pull remote-item new-sync-token)
-                   (emacs-todoist--handle-deletion new-sync-token))))))))))
+               (if remote-item
+                   (emacs-todoist--apply-pull remote-item new-sync-token)
+                 (emacs-todoist--handle-deletion new-sync-token))))))))))
 
 ;;;###autoload
 (defun emacs-todoist-set-recurrence (due-string)
@@ -1264,7 +1264,7 @@ is where post-classification hooks run."
                      (remote-changed (not (equal remote-hash stored-remote-hash))))
                 (cond
                  ((and (not local-changed) (not remote-changed))
-                 (emacs-todoist-org-set-props
+                  (emacs-todoist-org-set-props
                    `(("TODOIST_SYNC_TOKEN" . ,new-sync-token)))
                   (cl-incf skipped))
                  ((and (not local-changed) remote-changed)
@@ -1343,18 +1343,18 @@ is where post-classification hooks run."
                       0)))
               0))
            (inserted-total (+ inserted-from-children inserted-from-hook)))
-    ;; All headings classified — proceed to push phase.
-    (emacs-todoist--sync-entries-push
-     push-commands (nreverse pushed-entries)
-     new-markers new-sync-token
-     :pulled pulled :skipped skipped :inserted inserted-total
-     :done-fn done-fn)))
+      ;; All headings classified — proceed to push phase.
+      (emacs-todoist--sync-entries-push
+       push-commands (nreverse pushed-entries)
+       new-markers new-sync-token
+       :pulled pulled :skipped skipped :inserted inserted-total
+       :done-fn done-fn)))
 
-)
+  )
 
 (cl-defun emacs-todoist--sync-entries-push
     (push-commands pushed-entries new-markers sync-token
-     &key (pulled 0) (skipped 0) (inserted 0) done-fn)
+                   &key (pulled 0) (skipped 0) (inserted 0) done-fn)
   "Send batch push and new-heading commands, then write back results.
 PUSH-COMMANDS is a list of update/complete/uncomplete commands.
 PUSHED-ENTRIES is a list of plist entries with marker/id/state metadata.
@@ -1419,7 +1419,7 @@ PULLED, SKIPPED, and INSERTED are counters for the summary message."
             :done-fn done-fn))))))))
 (cl-defun emacs-todoist--sync-entries-writeback
     (pushed-entries new-entries new-markers response
-     &key (pulled 0) (skipped 0) (inserted 0) done-fn)
+                    &key (pulled 0) (skipped 0) (inserted 0) done-fn)
   "Write back hashes and IDs after a successful bulk push.
 PUSHED-ENTRIES are plist entries for updated headings.
 NEW-ENTRIES is a list of (TEMP-ID . MARKER) for new headings.

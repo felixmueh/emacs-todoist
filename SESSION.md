@@ -37,6 +37,7 @@ Why this is a problem:
   incomplete.
 - The local outline can end up with a `DONE` parent and a newly inserted active
   child without any explicit conflict step.
+- When syncing the `DONE` change of the parent heading it will automatically complete the new child in todoist (as this is the default todoist behavior).
 
 Open policy choices:
 - Treat remote-added active child under local `DONE` parent as a sync conflict.
