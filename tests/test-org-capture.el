@@ -52,6 +52,31 @@
       (should (equal "proj-1" (org-entry-get (point) "TODOIST_PROJECT")))
       (should-not emacs-todoist-org-capture--marker))))
 
+(ert-deftest emacs-todoist-org-capture/before-finalize-tracks-capture-root ()
+  "Before-finalize stores root marker even when point is on a child."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Inbox\n** TODO Parent\n*** TODO Child\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\*\\* TODO Child$")
+    (beginning-of-line)
+    (let ((begin-marker (save-excursion
+                          (re-search-backward "^\\*\\* TODO Parent$")
+                          (point-marker)))
+          (end-marker (copy-marker (point-max) t)))
+      (cl-letf (((symbol-function 'org-capture-get)
+                 (lambda (property &optional _local)
+                   (pcase property
+                     (:begin-marker begin-marker)
+                     (:end-marker end-marker)
+                     (_ nil)))))
+        (setq emacs-todoist-org-capture--marker nil)
+        (emacs-todoist-org-capture-before-finalize)
+        (should (markerp emacs-todoist-org-capture--marker))
+        (save-excursion
+          (goto-char emacs-todoist-org-capture--marker)
+          (should (equal "Parent" (org-get-heading t t t t))))))))
+
 (ert-deftest emacs-todoist-org-capture/after-finalize-ignores-aborted-capture ()
   "Finalize hook does nothing when capture was aborted."
   (with-temp-buffer

@@ -87,11 +87,32 @@ When nil, project resolution uses normal heading/file/default fallback."
 
 (defun emacs-todoist-org-capture-before-finalize ()
   "Capture marker-saving hook for the Todoist capture template.
-Stores marker in the base buffer so it survives indirect capture buffers."
+Stores the captured root heading marker in the base buffer.
+
+The marker uses the capture region's begin marker so finalization still
+pushes the whole captured heading (and children) when point is on a
+child heading."
   (save-excursion
-    (org-back-to-heading t)
-    (let* ((pos (point))
-           (base-buf (or (buffer-base-buffer) (current-buffer))))
+    (let* ((base-buf (or (buffer-base-buffer) (current-buffer)))
+           (begin (org-capture-get :begin-marker 'local))
+           (end (org-capture-get :end-marker 'local))
+           (pos
+            (cond
+             ((and (markerp begin) (marker-buffer begin))
+              (goto-char begin)
+              (unless (org-at-heading-p)
+                (let ((end-pos (when (and (markerp end) (marker-buffer end))
+                                 (marker-position end))))
+                  (when (re-search-forward org-heading-regexp end-pos t)
+                    (goto-char (match-beginning 0)))))
+              (if (org-at-heading-p)
+                  (point)
+                (progn
+                  (org-back-to-heading t)
+                  (point))))
+             (t
+              (org-back-to-heading t)
+              (point)))))
       (setq emacs-todoist-org-capture--marker
             (with-current-buffer base-buf
               (copy-marker pos t))))))
