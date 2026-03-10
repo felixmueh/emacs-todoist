@@ -27,6 +27,34 @@
   :type 'string
   :group 'emacs-todoist)
 
+(defun emacs-todoist-frontend-default-project-order (projects)
+  "Return PROJECTS ordered with Inbox first, then alphabetically.
+PROJECTS is a list of project alists with `id' and `name' keys."
+  (let ((inbox '())
+        (rest '()))
+    (dolist (project projects)
+      (if (string-equal
+           (downcase (format "%s" (or (alist-get 'name project) "")))
+           "inbox")
+          (push project inbox)
+        (push project rest)))
+    (append
+     (nreverse inbox)
+     (sort (nreverse rest)
+           (lambda (a b)
+             (string-lessp
+              (downcase (format "%s" (or (alist-get 'name a) "")))
+              (downcase (format "%s" (or (alist-get 'name b) "")))))))))
+
+(defcustom emacs-todoist-frontend-project-order-function
+  #'emacs-todoist-frontend-default-project-order
+  "Function used to order frontend project containers.
+The function receives a list of project alists with `id' and `name'
+keys and should return that list in display order.
+Ordering is applied when `emacs-todoist-open' performs a full render."
+  :type 'function
+  :group 'emacs-todoist)
+
 (defvar-local emacs-todoist--frontend-project-map nil
   "Hash table: project-id string to project heading marker in frontend buffer.")
 
@@ -205,6 +233,25 @@ TOP-LEVEL includes items with no parent_id or a parent_id outside ITEMS."
           (push item nested))))
     (cons (nreverse top-level) (nreverse nested))))
 
+(defun emacs-todoist--frontend-ordered-projects (projects)
+  "Return PROJECTS ordered by `emacs-todoist-frontend-project-order-function'."
+  (condition-case err
+      (let ((ordered (funcall emacs-todoist-frontend-project-order-function
+                              (copy-tree projects))))
+        (if (listp ordered)
+            ordered
+          projects))
+    (error
+     (emacs-todoist-log 'warn "Invalid frontend project order function: %s" err)
+     projects)))
+
+(defun emacs-todoist--frontend-create-project-containers (projects)
+  "Create project container headings for PROJECTS in configured order."
+  (dolist (project (emacs-todoist--frontend-ordered-projects projects))
+    (when-let* ((project-id (alist-get 'id project)))
+      (emacs-todoist--frontend-project-fn
+       `((project_id . ,(format "%s" project-id)))))))
+
 (defun emacs-todoist--frontend-project-fn (item)
   "Return project container marker for ITEM, creating it if missing."
   (unless (hash-table-p emacs-todoist--frontend-project-map)
@@ -308,6 +355,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                                (emacs-todoist--frontend-id-name-map-from-projects projects))
                    (setq-local emacs-todoist--frontend-project-map
                                (make-hash-table :test #'equal))
+                   (emacs-todoist--frontend-create-project-containers projects)
                    (emacs-todoist--apply-top-level-items
                     top-level-items sync-token id-map
                     #'emacs-todoist--frontend-project-fn)

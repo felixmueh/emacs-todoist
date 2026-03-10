@@ -42,6 +42,18 @@
             (checked . ,(or checked 0)))
           (when parent-id `((parent_id . ,parent-id)))))
 
+(defun emacs-todoist-test--top-level-headings ()
+  "Return top-level heading titles from current Org buffer."
+  (let ((titles '()))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward org-heading-regexp nil t)
+        (beginning-of-line)
+        (when (= (org-current-level) 1)
+          (push (emacs-todoist-org-heading-title) titles))
+        (end-of-line)))
+    (nreverse titles)))
+
 ;; ==============================================================================
 ;; Upsert primitives
 ;; ============================================================================== 
@@ -86,6 +98,17 @@
         (emacs-todoist-frontend-file-name "tasks.org"))
     (should (equal "/tmp/emacs-todoist-tests/tasks.org"
                    (emacs-todoist--frontend-file-path)))))
+
+(ert-deftest emacs-todoist-frontend/default-project-order-inbox-then-alpha ()
+  "Default project order keeps Inbox first, then sorts by name."
+  (let* ((projects '(((id . "proj-3") (name . "Work"))
+                     ((id . "proj-2") (name . "life"))
+                     ((id . "proj-1") (name . "Inbox"))))
+         (ordered (emacs-todoist-frontend-default-project-order projects)))
+    (should (equal '("Inbox" "life" "Work")
+                   (mapcar (lambda (project)
+                             (alist-get 'name project))
+                           ordered)))))
 
 (ert-deftest emacs-todoist-frontend/apply-items-inserts-new-child ()
   "apply-items inserts a missing child when its parent exists in ID map."
@@ -356,6 +379,31 @@
                (due . nil)
                (checked . 1))))))
 
+(defun emacs-todoist-test--frontend-open-response-multi-project ()
+  "Response payload with intentionally unsorted projects/items."
+  '((sync_token . "tok-open")
+    (projects . (((id . "proj-3") (name . "Work"))
+                 ((id . "proj-2") (name . "Life"))
+                 ((id . "proj-1") (name . "Inbox"))))
+    (items . (((id . "top-3")
+               (content . "Task Work")
+               (description . "")
+               (project_id . "proj-3")
+               (due . nil)
+               (checked . 0))
+              ((id . "top-2")
+               (content . "Task Life")
+               (description . "")
+               (project_id . "proj-2")
+               (due . nil)
+               (checked . 0))
+              ((id . "top-1")
+               (content . "Task Inbox")
+               (description . "")
+               (project_id . "proj-1")
+               (due . nil)
+               (checked . 0))))))
+
 (ert-deftest emacs-todoist-frontend/buffer-is-created ()
   "emacs-todoist-open creates an org-mode frontend buffer."
   (emacs-todoist-test-with-clean-frontend
@@ -507,6 +555,63 @@
         (should (org-entry-get (point) "TODOIST_LOCAL_HASH"))
         (should (org-entry-get (point) "TODOIST_REMOTE_HASH"))
         (should-not (re-search-forward "^\\*\\*\\* DONE Nested DONE$" nil t))))))
+
+(ert-deftest emacs-todoist-frontend/renders-projects-with-default-order ()
+  "Frontend render orders projects as Inbox first, then alphabetically."
+  (emacs-todoist-test-with-clean-frontend
+    (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+               (lambda (_sync-token _resource-types _commands callback)
+                 (funcall callback
+                          (emacs-todoist-test--frontend-open-response-multi-project)))))
+      (emacs-todoist-open)
+      (with-current-buffer emacs-todoist-frontend-file-name
+        (should (equal '("Inbox" "Life" "Work")
+                       (emacs-todoist-test--top-level-headings)))))))
+
+(ert-deftest emacs-todoist-frontend/renders-projects-with-custom-order-function ()
+  "Frontend render respects custom project order function."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((emacs-todoist-frontend-project-order-function
+           (lambda (projects)
+             (sort projects
+                   (lambda (a b)
+                     (string-lessp
+                      (downcase (format "%s" (or (alist-get 'name b) "")))
+                      (downcase (format "%s" (or (alist-get 'name a) "")))))))))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (funcall callback
+                            (emacs-todoist-test--frontend-open-response-multi-project)))))
+        (emacs-todoist-open)
+        (with-current-buffer emacs-todoist-frontend-file-name
+          (should (equal '("Work" "Life" "Inbox")
+                         (emacs-todoist-test--top-level-headings))))))))
+
+(ert-deftest emacs-todoist-frontend/new-project-on-sync-appends-at-end ()
+  "Incremental sync appends newly seen project containers at buffer end."
+  (emacs-todoist-test-with-clean-frontend
+    (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+               (lambda (_sync-token resource-types commands callback)
+                 (if (equal resource-types '("items" "projects"))
+                     (funcall callback
+                              (emacs-todoist-test--frontend-open-response-multi-project))
+                   (if (null commands)
+                       (funcall callback
+                                '((sync_token . "tok-sync")
+                                  (items . (((id . "top-aaa")
+                                             (content . "Task AAA")
+                                             (description . "")
+                                             (project_id . "proj-aaa")
+                                             (due . nil)
+                                             (checked . 0))))))
+                     (funcall callback '((sync_token . "tok-sync-2")
+                                         (items . nil))))))))
+      (emacs-todoist-open)
+      (with-current-buffer emacs-todoist-frontend-file-name
+        (puthash "proj-aaa" "AAA" emacs-todoist--frontend-id-to-name)
+        (emacs-todoist-frontend-sync)
+        (should (equal '("Inbox" "Life" "Work" "AAA")
+                       (emacs-todoist-test--top-level-headings)))))))
 
 (ert-deftest emacs-todoist-frontend/unknown-project-renders ()
   "Unknown project IDs render under an 'Unknown Project' container."
