@@ -374,6 +374,27 @@
           (should emacs-todoist-frontend-mode)
           (should emacs-todoist-mode))))))
 
+(ert-deftest emacs-todoist-frontend/open-delays-switch-until-initial-render-finishes ()
+  "Initial `emacs-todoist-open' switches only after async render callback."
+  (emacs-todoist-test-with-clean-frontend
+    (let (captured-callback switched-to)
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token _resource-types _commands callback)
+                   (setq captured-callback callback)))
+                ((symbol-function 'switch-to-buffer)
+                 (lambda (buffer-or-name &rest _args)
+                   (setq switched-to buffer-or-name))))
+        (emacs-todoist-open)
+        (should captured-callback)
+        (should-not switched-to)
+        (funcall captured-callback (emacs-todoist-test--frontend-open-response))
+        (let ((frontend-buf (get-buffer emacs-todoist-frontend-file-name))
+              (switched-buf (if (bufferp switched-to)
+                                switched-to
+                              (get-buffer switched-to))))
+          (should frontend-buf)
+          (should (eq frontend-buf switched-buf)))))))
+
 (ert-deftest emacs-todoist-frontend/buffer-reused-and-synced-on-second-call ()
   "Second open call reuses existing buffer and runs incremental sync."
   (emacs-todoist-test-with-clean-frontend
@@ -414,6 +435,27 @@
           (goto-char (point-min))
           (should (re-search-forward "^\\*\\* TODO From Second Open$" nil t)))
         (should (>= calls 2))))))
+
+(ert-deftest emacs-todoist-frontend/open-delays-switch-until-incremental-sync-finishes ()
+  "Re-opened frontend switches only after incremental sync completion callback."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer))
+          done-fn
+          switched-to)
+      (cl-letf (((symbol-function 'emacs-todoist-frontend-sync)
+                 (lambda (&optional fn)
+                   (setq done-fn fn)))
+                ((symbol-function 'switch-to-buffer)
+                 (lambda (buffer-or-name &rest _args)
+                   (setq switched-to buffer-or-name))))
+        (emacs-todoist-open)
+        (should done-fn)
+        (should-not switched-to)
+        (funcall done-fn '(:status ok))
+        (let ((switched-buf (if (bufferp switched-to)
+                                switched-to
+                              (get-buffer switched-to))))
+          (should (eq todoist-buf switched-buf)))))))
 
 (ert-deftest emacs-todoist-frontend/sync-on-save-triggers-sync ()
   "Saving frontend buffer triggers incremental sync when configured."
@@ -733,6 +775,27 @@
             (insert-file-contents agenda-file)
             (goto-char (point-min))
             (should (re-search-forward "^\\*\\* TODO Agenda Item$" nil t))))))))
+
+(ert-deftest emacs-todoist-frontend/agenda-delays-open-until-sync-finishes ()
+  "Agenda command waits for sync completion and does not switch to frontend."
+  (emacs-todoist-test-with-clean-frontend
+    (let (done-fn switched-to agenda-opened)
+      (cl-letf (((symbol-function 'emacs-todoist-frontend-sync)
+                 (lambda (&optional fn)
+                   (setq done-fn fn)))
+                ((symbol-function 'switch-to-buffer)
+                 (lambda (buffer-or-name &rest _args)
+                   (setq switched-to buffer-or-name)))
+                ((symbol-function 'emacs-todoist--frontend-open-agenda-from-buffer)
+                 (lambda ()
+                   (setq agenda-opened t))))
+        (emacs-todoist-frontend-agenda)
+        (should done-fn)
+        (should-not switched-to)
+        (should-not agenda-opened)
+        (funcall done-fn '(:status ok))
+        (should-not switched-to)
+        (should agenda-opened)))))
 
 (ert-deftest emacs-todoist-frontend/autoload-open-command ()
   "Main package exposes frontend open command through autoload."

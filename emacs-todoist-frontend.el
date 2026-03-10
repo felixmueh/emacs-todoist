@@ -260,6 +260,11 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
     (remove-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
                  t)))
 
+(defun emacs-todoist--frontend-show-buffer (todoist-buf)
+  "Display TODOIST-BUF after async frontend work finishes."
+  (when (buffer-live-p todoist-buf)
+    (switch-to-buffer todoist-buf)))
+
 ;;;###autoload
 (defun emacs-todoist-open ()
   "Open and render Todoist tasks in the frontend Org buffer."
@@ -269,12 +274,13 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
     (if-let* ((todoist-buf (and already-open
                                 (emacs-todoist-frontend-ensure-buffer))))
       (progn
-        (switch-to-buffer todoist-buf)
         (with-current-buffer todoist-buf
           (emacs-todoist--frontend-setup-buffer t))
-        (emacs-todoist-frontend-sync))
+        (with-current-buffer todoist-buf
+          (emacs-todoist-frontend-sync
+           (lambda (_summary)
+             (emacs-todoist--frontend-show-buffer todoist-buf)))))
       (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer)))
-        (switch-to-buffer todoist-buf)
         (with-current-buffer todoist-buf
           (emacs-todoist--frontend-setup-buffer))
         (emacs-todoist-api-sync
@@ -309,6 +315,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                    (goto-char (point-min))
                    (setq-local emacs-todoist--frontend-bootstrap-complete t)
                    (emacs-todoist--frontend-save-buffer)
+                   (emacs-todoist--frontend-show-buffer todoist-buf)
                    (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
 (defun emacs-todoist-frontend-sync (&optional done-fn)
@@ -361,7 +368,6 @@ heading visible."
   "Sync the frontend buffer, then open a date agenda for frontend items."
   (interactive)
   (let ((todoist-buf (emacs-todoist-frontend-ensure-buffer)))
-    (switch-to-buffer todoist-buf)
     (with-current-buffer todoist-buf
       (emacs-todoist-frontend-sync
        (lambda (_summary)
