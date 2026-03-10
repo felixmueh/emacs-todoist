@@ -59,6 +59,9 @@
 (autoload 'emacs-todoist-open "emacs-todoist-frontend" nil t)
 
 ;;;###autoload
+(autoload 'emacs-todoist-open-recreate "emacs-todoist-frontend" nil t)
+
+;;;###autoload
 (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
 
 (autoload 'emacs-todoist-org-capture-install-template

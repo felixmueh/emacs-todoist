@@ -320,6 +320,20 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
     (switch-to-buffer todoist-buf)))
 
 ;;;###autoload
+(defun emacs-todoist-open-recreate ()
+  "Recreate and render Todoist tasks in the frontend Org buffer.
+If the frontend buffer is currently open, kill it first, then delegate
+to `emacs-todoist-open'."
+  (interactive)
+  (let ((frontend-file (emacs-todoist--frontend-file-path)))
+    (when-let* ((frontend-buf (get-file-buffer frontend-file)))
+      ;; Recreate should not block on modified-state prompts.
+      (with-current-buffer frontend-buf
+        (set-buffer-modified-p nil))
+      (kill-buffer frontend-buf)))
+  (emacs-todoist-open))
+
+;;;###autoload
 (defun emacs-todoist-open ()
   "Open and render Todoist tasks in the frontend Org buffer."
   (interactive)

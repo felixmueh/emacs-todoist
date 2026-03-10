@@ -551,6 +551,33 @@
                               (get-buffer switched-to))))
           (should (eq todoist-buf switched-buf)))))))
 
+(ert-deftest emacs-todoist-frontend/open-recreate-delegates-to-open ()
+  "open-recreate is a thin wrapper that delegates to `emacs-todoist-open'."
+  (let ((open-calls 0))
+    (cl-letf (((symbol-function 'emacs-todoist-open)
+               (lambda ()
+                 (cl-incf open-calls))))
+      (emacs-todoist-open-recreate))
+    (should (= 1 open-calls))))
+
+(ert-deftest emacs-todoist-frontend/open-recreate-forces-full-open-path ()
+  "open-recreate kills existing frontend buffer so open path is full render."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((items-projects-fetches 0)
+          (frontend-sync-calls 0))
+      (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                 (lambda (_sync-token resource-types _commands callback)
+                   (when (equal resource-types '("items" "projects"))
+                     (cl-incf items-projects-fetches))
+                   (funcall callback (emacs-todoist-test--frontend-open-response))))
+                ((symbol-function 'emacs-todoist-frontend-sync)
+                 (lambda (&optional _done-fn)
+                   (cl-incf frontend-sync-calls))))
+        (emacs-todoist-open)
+        (emacs-todoist-open-recreate))
+      (should (= 2 items-projects-fetches))
+      (should (= 0 frontend-sync-calls)))))
+
 (ert-deftest emacs-todoist-frontend/sync-on-save-triggers-sync ()
   "Saving frontend buffer triggers incremental sync when configured."
   (emacs-todoist-test-with-clean-frontend
@@ -953,6 +980,12 @@
   (fmakunbound 'emacs-todoist-open)
   (autoload 'emacs-todoist-open "emacs-todoist-frontend" nil t)
   (should (autoloadp (symbol-function 'emacs-todoist-open))))
+
+(ert-deftest emacs-todoist-frontend/autoload-open-recreate-command ()
+  "Main package exposes frontend open-recreate command through autoload."
+  (fmakunbound 'emacs-todoist-open-recreate)
+  (autoload 'emacs-todoist-open-recreate "emacs-todoist-frontend" nil t)
+  (should (autoloadp (symbol-function 'emacs-todoist-open-recreate))))
 
 (ert-deftest emacs-todoist-frontend/autoload-agenda-command ()
   "Main package exposes frontend agenda command through autoload."
