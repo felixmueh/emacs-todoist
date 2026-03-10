@@ -100,6 +100,20 @@
 ;; -----------------------------------------------------------------------------
 
 (with-eval-after-load 'emacs-todoist-frontend
+  ;; Example: on initial frontend creation, collapse all projects and
+  ;; expand only the first child level under Inbox.
+  (defun +todoist-frontend-focus-inbox ()
+    "Fold all projects and show only Inbox first-level tasks."
+    (when (derived-mode-p 'org-mode)
+      (save-excursion
+        (org-overview)
+        (goto-char (point-min))
+        (when (re-search-forward "^\\* Inbox\\(?:[[:space:]:].*\\)?$" nil t)
+          (beginning-of-line)
+          (org-show-children 1)))))
+  (add-hook 'emacs-todoist-frontend-after-creation-hook
+            #'+todoist-frontend-focus-inbox)
+
   (add-hook 'emacs-todoist-frontend-mode-hook
             (lambda ()
               (visual-line-mode 1)

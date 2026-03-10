@@ -443,6 +443,52 @@
           (should frontend-buf)
           (should (eq frontend-buf switched-buf)))))))
 
+(ert-deftest emacs-todoist-frontend/after-creation-hook-runs-on-initial-render ()
+  "Frontend creation hook runs once after initial full render."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((runs 0)
+          hook-fn)
+      (setq hook-fn
+            (lambda ()
+              (cl-incf runs)
+              (should (derived-mode-p 'org-mode))
+              (should emacs-todoist-frontend-mode)))
+      (unwind-protect
+          (progn
+            (add-hook 'emacs-todoist-frontend-after-creation-hook hook-fn)
+            (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                       (lambda (_sync-token _resource-types _commands callback)
+                         (funcall callback (emacs-todoist-test--frontend-open-response)))))
+              (emacs-todoist-open))
+            (should (= 1 runs)))
+        (remove-hook 'emacs-todoist-frontend-after-creation-hook hook-fn)))))
+
+(ert-deftest emacs-todoist-frontend/after-creation-hook-not-run-on-reopen-sync ()
+  "Frontend creation hook is not run for reopen incremental sync path."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((runs 0)
+          hook-fn)
+      (setq hook-fn (lambda () (cl-incf runs)))
+      (unwind-protect
+          (progn
+            (add-hook 'emacs-todoist-frontend-after-creation-hook hook-fn)
+            (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                       (lambda (_sync-token resource-types commands callback)
+                         (cond
+                          ((equal resource-types '("items" "projects"))
+                           (funcall callback
+                                    (emacs-todoist-test--frontend-open-response)))
+                          ((null commands)
+                           (funcall callback '((sync_token . "tok-reopen")
+                                               (items . nil))))
+                          (t
+                           (funcall callback '((sync_token . "tok-reopen-2")
+                                               (items . nil))))))))
+              (emacs-todoist-open)
+              (emacs-todoist-open))
+            (should (= 1 runs)))
+        (remove-hook 'emacs-todoist-frontend-after-creation-hook hook-fn)))))
+
 (ert-deftest emacs-todoist-frontend/buffer-reused-and-synced-on-second-call ()
   "Second open call reuses existing buffer and runs incremental sync."
   (emacs-todoist-test-with-clean-frontend

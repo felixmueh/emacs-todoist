@@ -55,6 +55,13 @@ Ordering is applied when `emacs-todoist-open' performs a full render."
   :type 'function
   :group 'emacs-todoist)
 
+(defcustom emacs-todoist-frontend-after-creation-hook nil
+  "Hook run after `emacs-todoist-open' finishes its initial full render.
+Functions run in the frontend buffer and can adjust presentation
+state such as folding/visibility."
+  :type 'hook
+  :group 'emacs-todoist)
+
 (defvar-local emacs-todoist--frontend-project-map nil
   "Hash table: project-id string to project heading marker in frontend buffer.")
 
@@ -363,6 +370,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
                    (goto-char (point-min))
                    (setq-local emacs-todoist--frontend-bootstrap-complete t)
                    (emacs-todoist--frontend-save-buffer)
+                   (run-hooks 'emacs-todoist-frontend-after-creation-hook)
                    (emacs-todoist--frontend-show-buffer todoist-buf)
                    (message "emacs-todoist: rendered %d tasks" (length items))))))))))))
 
