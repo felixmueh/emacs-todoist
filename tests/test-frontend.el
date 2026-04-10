@@ -97,7 +97,7 @@
   (let ((org-directory "/tmp/emacs-todoist-tests")
         (emacs-todoist-frontend-file-name "tasks.org"))
     (should (equal "/tmp/emacs-todoist-tests/tasks.org"
-                   (emacs-todoist--frontend-file-path)))))
+                   (emacs-todoist-frontend-file-path)))))
 
 (ert-deftest emacs-todoist-frontend/default-project-order-inbox-then-alpha ()
   "Default project order keeps Inbox first, then sorts by name."
@@ -974,6 +974,75 @@
         (funcall done-fn '(:status ok))
         (should-not switched-to)
         (should agenda-opened)))))
+
+(ert-deftest emacs-todoist-frontend/agenda-hook-runs-in-agenda-buffer ()
+  "Frontend agenda hook runs in the agenda buffer after opening."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((runs 0)
+          hook-fn
+          hook-buffer)
+      (setq hook-fn
+            (lambda ()
+              (cl-incf runs)
+              (setq hook-buffer (current-buffer))))
+      (unwind-protect
+          (progn
+            (add-hook 'emacs-todoist-frontend-agenda-hook hook-fn)
+            (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                       (lambda (_sync-token resource-types commands callback)
+                         (if (and (equal resource-types '("items"))
+                                  (null commands))
+                             (funcall callback
+                                      '((sync_token . "tok-agenda")
+                                        (items . (((id . "a1")
+                                                   (content . "Agenda Item")
+                                                   (description . "")
+                                                   (project_id . "proj-1")
+                                                   (due . nil)
+                                                   (checked . 0))))))
+                           (funcall callback
+                                    '((sync_token . "tok-agenda-push")
+                                      (items . nil)))))))
+              (emacs-todoist-frontend-agenda))
+            (should (= 1 runs))
+            (should (buffer-live-p hook-buffer))
+            (with-current-buffer hook-buffer
+              (should (derived-mode-p 'org-agenda-mode))))
+        (remove-hook 'emacs-todoist-frontend-agenda-hook hook-fn)))))
+
+(ert-deftest emacs-todoist-frontend/agenda-hook-runs-for-mocked-agenda-buffer ()
+  "Frontend agenda hook runs when `org-agenda-list' creates the agenda buffer."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((runs 0)
+          hook-fn)
+      (setq hook-fn
+            (lambda ()
+              (cl-incf runs)))
+      (unwind-protect
+          (progn
+            (add-hook 'emacs-todoist-frontend-agenda-hook hook-fn)
+            (cl-letf (((symbol-function 'emacs-todoist-api-sync)
+                       (lambda (_sync-token resource-types commands callback)
+                         (if (and (equal resource-types '("items"))
+                                  (null commands))
+                             (funcall callback
+                                      '((sync_token . "tok-agenda")
+                                        (items . (((id . "a1")
+                                                   (content . "Agenda Item")
+                                                   (description . "")
+                                                   (project_id . "proj-1")
+                                                   (due . nil)
+                                                   (checked . 0))))))
+                           (funcall callback
+                                    '((sync_token . "tok-agenda-push")
+                                      (items . nil))))))
+                      ((symbol-function 'org-agenda-list)
+                       (lambda (&rest _args)
+                         (with-current-buffer (get-buffer-create org-agenda-buffer-name)
+                           (org-agenda-mode)))))
+              (emacs-todoist-frontend-agenda))
+            (should (= 1 runs)))
+        (remove-hook 'emacs-todoist-frontend-agenda-hook hook-fn)))))
 
 (ert-deftest emacs-todoist-frontend/autoload-open-command ()
   "Main package exposes frontend open command through autoload."

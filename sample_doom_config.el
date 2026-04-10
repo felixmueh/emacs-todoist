@@ -120,5 +120,28 @@
               (setq-local line-spacing 0.1)
               (display-line-numbers-mode -1))))
 
+(defun +todoist-agenda-save-frontend-file ()
+  "Save the Todoist frontend file that backs the current agenda and reload it."
+  (interactive)
+  (let ((todoist-file (emacs-todoist-frontend-file-path)))
+    (with-current-buffer (find-file-noselect todoist-file)
+      (save-buffer))
+    (org-agenda-redo)
+    ;; `org-agenda-redo' rebuilds the agenda keymap, so reapply this
+    ;; one-off binding here. If this grows, use a dedicated minor mode.
+    (let ((map (copy-keymap (current-local-map))))
+      (define-key map (kbd "C-c C-c")
+                  #'+todoist-agenda-save-frontend-file)
+      (use-local-map map))
+    (message "Saved and reloaded Todoist agenda: %s" todoist-file)))
+
+;; Runs in agenda buffers opened by `emacs-todoist-frontend-agenda'.
+(add-hook 'emacs-todoist-frontend-agenda-hook
+          (lambda ()
+            (let ((map (copy-keymap (current-local-map))))
+              (define-key map (kbd "C-c C-c")
+                          #'+todoist-agenda-save-frontend-file)
+              (use-local-map map))))
+
 (provide 'sample_doom_config)
 ;;; sample_doom_config.el ends here

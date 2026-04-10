@@ -62,6 +62,13 @@ state such as folding/visibility."
   :type 'hook
   :group 'emacs-todoist)
 
+(defcustom emacs-todoist-frontend-agenda-hook nil
+  "Hook run after `emacs-todoist-frontend-agenda' opens an agenda buffer.
+Functions run in the agenda buffer and can customize agenda-local
+behavior for views sourced from the Todoist frontend file."
+  :type 'hook
+  :group 'emacs-todoist)
+
 (defvar-local emacs-todoist--frontend-project-map nil
   "Hash table: project-id string to project heading marker in frontend buffer.")
 
@@ -77,7 +84,7 @@ state such as folding/visibility."
 (defvar-local emacs-todoist--frontend-bootstrap-complete nil
   "Non-nil after this frontend buffer has completed its initial full sync.")
 
-(defun emacs-todoist--frontend-file-path ()
+(defun emacs-todoist-frontend-file-path ()
   "Return the absolute path for the frontend file-backed Org buffer."
   (let ((dir (if (and (stringp org-directory)
                       (> (length org-directory) 0))
@@ -130,7 +137,7 @@ When PRESERVE-MAPS is non-nil, keep existing project/id maps."
 
 (defun emacs-todoist-frontend-ensure-buffer ()
   "Return the Todoist frontend buffer, creating and initializing it."
-  (let* ((frontend-file (emacs-todoist--frontend-file-path))
+  (let* ((frontend-file (emacs-todoist-frontend-file-path))
          (frontend-dir (file-name-directory frontend-file)))
     (when (and frontend-dir (not (file-directory-p frontend-dir)))
       (make-directory frontend-dir t))
@@ -325,7 +332,7 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 If the frontend buffer is currently open, kill it first, then delegate
 to `emacs-todoist-open'."
   (interactive)
-  (let ((frontend-file (emacs-todoist--frontend-file-path)))
+  (let ((frontend-file (emacs-todoist-frontend-file-path)))
     (when-let* ((frontend-buf (get-file-buffer frontend-file)))
       ;; Recreate should not block on modified-state prompts.
       (with-current-buffer frontend-buf
@@ -337,7 +344,7 @@ to `emacs-todoist-open'."
 (defun emacs-todoist-open ()
   "Open and render Todoist tasks in the frontend Org buffer."
   (interactive)
-  (let* ((frontend-file (emacs-todoist--frontend-file-path))
+  (let* ((frontend-file (emacs-todoist-frontend-file-path))
          (already-open (get-file-buffer frontend-file)))
     (if-let* ((todoist-buf (and already-open
                                 (emacs-todoist-frontend-ensure-buffer))))
@@ -431,7 +438,10 @@ heading visible."
     (user-error "Frontend buffer is not visiting a file"))
   (emacs-todoist--frontend-save-buffer)
   (let ((org-agenda-files (list buffer-file-name)))
-    (org-agenda-list)))
+    (org-agenda-list)
+    (when-let* ((agenda-buf (get-buffer org-agenda-buffer-name)))
+      (with-current-buffer agenda-buf
+        (run-hooks 'emacs-todoist-frontend-agenda-hook)))))
 
 ;;;###autoload
 (defun emacs-todoist-frontend-agenda ()

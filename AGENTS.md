@@ -4,6 +4,11 @@ Bidirectional sync between org-mode TODOs and Todoist via the Sync
 API v1.  **Not** v9 — we target the v1 endpoint at
 `https://api.todoist.com/api/v1/sync`.
 
+## Development status
+
+This project is in active development. There is no requirement to
+preserve backward compatibility unless explicitly requested.
+
 ## Architecture
 
 Five modules with strict dependency direction:

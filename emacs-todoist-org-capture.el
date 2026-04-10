@@ -152,7 +152,7 @@ Only entries captured with this template trigger this hook behavior."
         emacs-todoist-org-capture-template-name
         'entry
         (list 'file+function
-              (emacs-todoist--frontend-file-path)
+              (emacs-todoist-frontend-file-path)
               #'emacs-todoist-org-capture--goto-target-headline)
         (emacs-todoist-org-capture--template-body)
         :prepend t
