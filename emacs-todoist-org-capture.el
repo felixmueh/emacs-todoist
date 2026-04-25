@@ -81,9 +81,9 @@ When nil, project resolution uses normal heading/file/default fallback."
 (defun emacs-todoist-org-capture--template-body ()
   "Return template body string for Todoist captures."
   (if-let* ((project (emacs-todoist-org-capture--target-project)))
-      (format "* TODO %%?\n:PROPERTIES:\n:TODOIST_PROJECT: %s\n:END:\n%%i\n%%a"
+      (format "* TODO %%?\nDEADLINE: <%%<%%Y-%%m-%%d %%a>>\n:PROPERTIES:\n:TODOIST_PROJECT: %s\n:END:\n%%i\n%%a"
               project)
-    "* TODO %?\n%i\n%a"))
+    "* TODO %?\nDEADLINE: <%<%Y-%m-%d %a>>\n%i\n%a"))
 
 (defun emacs-todoist-org-capture-before-finalize ()
   "Capture marker-saving hook for the Todoist capture template.

@@ -24,6 +24,17 @@
     (should (eq #'emacs-todoist-org-capture-after-finalize
                 (plist-get props :after-finalize)))))
 
+(ert-deftest emacs-todoist-org-capture/template-defaults-deadline-to-today ()
+  "Capture template should default captured tasks to today's deadline."
+  (let ((emacs-todoist-org-capture-project nil))
+    (should (equal "* TODO %?\nDEADLINE: <%<%Y-%m-%d %a>>\n%i\n%a"
+                   (emacs-todoist-org-capture--template-body))))
+  (let ((emacs-todoist-org-capture-project "proj-1"))
+    (should
+     (equal
+      "* TODO %?\nDEADLINE: <%<%Y-%m-%d %a>>\n:PROPERTIES:\n:TODOIST_PROJECT: proj-1\n:END:\n%i\n%a"
+      (emacs-todoist-org-capture--template-body)))))
+
 (ert-deftest emacs-todoist-org-capture/install-template-idempotent ()
   "Installing template twice should not duplicate the key."
   (let ((org-capture-templates nil)
