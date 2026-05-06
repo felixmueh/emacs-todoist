@@ -1062,6 +1062,21 @@
   (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
   (should (autoloadp (symbol-function 'emacs-todoist-frontend-agenda))))
 
+(ert-deftest emacs-todoist-frontend/autoload-view-canonical-heading-command ()
+  "Main package exposes canonical heading view command through autoload."
+  (fmakunbound 'emacs-todoist-view-canonical-heading)
+  (autoload 'emacs-todoist-view-canonical-heading "emacs-todoist-frontend" nil t)
+  (should (autoloadp (symbol-function 'emacs-todoist-view-canonical-heading))))
+
+(ert-deftest emacs-todoist-frontend/keymaps-exposed-for-user-bindings ()
+  "Frontend and agenda keymaps are exposed without package-level leader keys."
+  (should (keymapp emacs-todoist-frontend-keymap))
+  (should (keymapp emacs-todoist-agenda-keymap))
+  (should-not (eq #'emacs-todoist-view-canonical-heading
+                  (lookup-key emacs-todoist-frontend-keymap (kbd "SPC m v"))))
+  (should-not (eq #'emacs-todoist-view-canonical-heading
+                  (lookup-key emacs-todoist-agenda-keymap (kbd "SPC m v")))))
+
 (ert-deftest emacs-todoist-frontend/insert-captured-subtree-under-project ()
   "Captured subtree insertion places heading under the target project."
   (emacs-todoist-test-with-clean-frontend
@@ -1082,5 +1097,146 @@
                        (save-excursion
                          (org-up-heading-safe)
                          (emacs-todoist-org-heading-title))))))))
+
+;; ==============================================================================
+;; Canonical heading navigation
+;; ==============================================================================
+
+(ert-deftest emacs-todoist-frontend/view-canonical-heading-opens-other-window ()
+  "Viewing a canonical heading opens the source while keeping frontend focus."
+  (emacs-todoist-test-with-clean-frontend
+    (let* ((source-file (expand-file-name "source.org" org-directory))
+           (cache-file (expand-file-name "find-cache.el" org-directory))
+           (frontend-buf (emacs-todoist-frontend-ensure-buffer))
+           (org-refile-targets `((,source-file :maxlevel . 5)))
+           (emacs-todoist-find-heading-cache-file cache-file))
+      (with-temp-file source-file
+        (insert "* TODO Source\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n"))
+      (with-current-buffer frontend-buf
+        (erase-buffer)
+        (org-mode)
+        (emacs-todoist-frontend-mode 1)
+        (insert "* TODO Frontend\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n")
+        (goto-char (point-min)))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (switch-to-buffer frontend-buf)
+            (let ((selected (selected-window))
+                  (frontend-point (point)))
+              (emacs-todoist-view-canonical-heading)
+              (should (eq selected (selected-window)))
+              (should (eq frontend-buf (current-buffer)))
+              (should (= frontend-point (point)))
+              (let ((source-buf (get-file-buffer source-file)))
+                (should source-buf)
+                (should (get-buffer-window source-buf t))
+                (with-current-buffer source-buf
+                  (goto-char (point-min))
+                  (should (equal "Source"
+                                 (emacs-todoist-org-heading-title)))))))
+        (when-let* ((source-buf (get-file-buffer source-file)))
+          (kill-buffer source-buf))))))
+
+(ert-deftest emacs-todoist-frontend/view-canonical-heading-pulses-source-line ()
+  "Viewing a canonical heading highlights the source line when pulse is available."
+  (emacs-todoist-test-with-clean-frontend
+    (let* ((source-file (expand-file-name "source.org" org-directory))
+           (cache-file (expand-file-name "find-cache.el" org-directory))
+           (frontend-buf (emacs-todoist-frontend-ensure-buffer))
+           (org-refile-targets `((,source-file :maxlevel . 5)))
+           (emacs-todoist-find-heading-cache-file cache-file)
+           pulse-point)
+      (with-temp-file source-file
+        (insert "* TODO Source\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n"))
+      (with-current-buffer frontend-buf
+        (erase-buffer)
+        (org-mode)
+        (emacs-todoist-frontend-mode 1)
+        (insert "* TODO Frontend\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n")
+        (goto-char (point-min)))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (switch-to-buffer frontend-buf)
+            (cl-letf (((symbol-function 'pulse-momentary-highlight-one-line)
+                       (lambda (point &rest _args)
+                         (setq pulse-point point))))
+              (emacs-todoist-view-canonical-heading))
+            (should pulse-point))
+        (when-let* ((source-buf (get-file-buffer source-file)))
+          (kill-buffer source-buf))))))
+
+(ert-deftest emacs-todoist-frontend/view-canonical-heading-works-from-agenda ()
+  "Canonical heading navigation works from Todoist agenda entries."
+  (emacs-todoist-test-with-clean-frontend
+    (let* ((source-file (expand-file-name "source.org" org-directory))
+           (cache-file (expand-file-name "find-cache.el" org-directory))
+           (frontend-buf (emacs-todoist-frontend-ensure-buffer))
+           (agenda-buf (get-buffer-create "*Todoist Agenda Test*"))
+           (org-refile-targets `((,source-file :maxlevel . 5)))
+           (emacs-todoist-find-heading-cache-file cache-file)
+           frontend-marker)
+      (with-temp-file source-file
+        (insert "* TODO Source\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n"))
+      (with-current-buffer frontend-buf
+        (erase-buffer)
+        (org-mode)
+        (emacs-todoist-frontend-mode 1)
+        (insert "* TODO Frontend\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n")
+        (goto-char (point-min))
+        (setq frontend-marker (copy-marker (point) t)))
+      (with-current-buffer agenda-buf
+        (erase-buffer)
+        (org-agenda-mode)
+        (emacs-todoist-agenda-mode 1)
+        (insert "  TODO Frontend\n")
+        (add-text-properties (point-min) (point-max)
+                             `(org-hd-marker ,frontend-marker))
+        (goto-char (point-min)))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (switch-to-buffer agenda-buf)
+            (let ((selected (selected-window))
+                  (agenda-point (point)))
+              (emacs-todoist-view-canonical-heading)
+              (should (eq selected (selected-window)))
+              (should (eq agenda-buf (current-buffer)))
+              (should (= agenda-point (point)))
+              (should (get-buffer-window (get-file-buffer source-file) t))))
+        (when (buffer-live-p agenda-buf)
+          (kill-buffer agenda-buf))
+        (when-let* ((source-buf (get-file-buffer source-file)))
+          (kill-buffer source-buf))))))
+
+(ert-deftest emacs-todoist-frontend/view-canonical-heading-requires-todoist-id ()
+  "Viewing a canonical heading requires a TODOIST_ID at point."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((frontend-buf (emacs-todoist-frontend-ensure-buffer)))
+      (with-current-buffer frontend-buf
+        (erase-buffer)
+        (org-mode)
+        (emacs-todoist-frontend-mode 1)
+        (insert "* TODO Frontend\n")
+        (goto-char (point-min))
+        (should-error (emacs-todoist-view-canonical-heading)
+                      :type 'user-error)))))
+
+(ert-deftest emacs-todoist-frontend/view-canonical-heading-errors-when-missing ()
+  "Viewing a canonical heading reports when no source heading is found."
+  (emacs-todoist-test-with-clean-frontend
+    (let ((frontend-buf (emacs-todoist-frontend-ensure-buffer))
+          (org-refile-targets nil)
+          (emacs-todoist-find-heading-cache-file
+           (expand-file-name "find-cache.el" org-directory)))
+      (with-current-buffer frontend-buf
+        (erase-buffer)
+        (org-mode)
+        (emacs-todoist-frontend-mode 1)
+        (insert "* TODO Frontend\n:PROPERTIES:\n:TODOIST_ID: t1\n:END:\n")
+        (goto-char (point-min))
+        (should-error (emacs-todoist-view-canonical-heading)
+                      :type 'user-error)))))
 
 ;;; test-frontend.el ends here

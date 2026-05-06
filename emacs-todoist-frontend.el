@@ -27,6 +27,8 @@
   :type 'string
   :group 'emacs-todoist)
 
+(require 'emacs-todoist-find-heading)
+
 (defun emacs-todoist-frontend-default-project-order (projects)
   "Return PROJECTS ordered with Inbox first, then alphabetically.
 PROJECTS is a list of project alists with `id' and `name' keys."
@@ -83,6 +85,78 @@ behavior for views sourced from the Todoist frontend file."
 
 (defvar-local emacs-todoist--frontend-bootstrap-complete nil
   "Non-nil after this frontend buffer has completed its initial full sync.")
+
+(defvar emacs-todoist-frontend-keymap
+  (make-sparse-keymap)
+  "Keymap active in `emacs-todoist-frontend-mode' buffers.")
+
+(defvar emacs-todoist-frontend-mode)
+
+(defvar emacs-todoist-agenda-keymap
+  (make-sparse-keymap)
+  "Keymap active in Todoist frontend agenda buffers.")
+
+(define-minor-mode emacs-todoist-agenda-mode
+  "Minor mode for agenda buffers sourced from the Todoist frontend."
+  :lighter " TodoistAgenda"
+  :keymap emacs-todoist-agenda-keymap)
+
+(defun emacs-todoist--marker-at-point ()
+  "Return the Org heading marker represented at point, or nil."
+  (or (get-text-property (point) 'org-hd-marker)
+      (get-text-property (point) 'org-marker)
+      (and (> (point) (point-min))
+           (or (get-text-property (1- (point)) 'org-hd-marker)
+               (get-text-property (1- (point)) 'org-marker)))
+      (get-text-property (line-beginning-position) 'org-hd-marker)
+      (get-text-property (line-beginning-position) 'org-marker)))
+
+(defun emacs-todoist--frontend-heading-marker-at-point ()
+  "Return the frontend heading marker represented at point."
+  (cond
+   (emacs-todoist-frontend-mode
+    (save-excursion
+      (org-back-to-heading t)
+      (copy-marker (point) t)))
+   ((derived-mode-p 'org-agenda-mode)
+    (let ((marker (emacs-todoist--marker-at-point)))
+      (unless (and (markerp marker) (marker-buffer marker))
+        (user-error "No Todoist agenda item at point"))
+      marker))
+   (t
+    (user-error "Not in an emacs-todoist frontend or agenda buffer"))))
+
+(defun emacs-todoist--reveal-source-marker (marker)
+  "Reveal MARKER in the selected source window."
+  (goto-char marker)
+  (when (derived-mode-p 'org-mode)
+    (condition-case nil
+        (progn
+          (org-back-to-heading t)
+          (funcall (symbol-function
+                    (if (fboundp 'org-fold-show-context)
+                        'org-fold-show-context
+                      'org-show-context)))
+          (funcall (symbol-function
+                    (if (fboundp 'org-fold-show-subtree)
+                        'org-fold-show-subtree
+                      'org-show-subtree))))
+      (user-error nil)))
+  (recenter)
+  (when (fboundp 'pulse-momentary-highlight-one-line)
+    (pulse-momentary-highlight-one-line (point))))
+
+(defun emacs-todoist--display-source-marker (marker)
+  "Display MARKER in another window while keeping the origin selected."
+  (let* ((buffer (marker-buffer marker))
+         (origin-window (selected-window))
+         (window (display-buffer
+                  buffer
+                  '(display-buffer-pop-up-window
+                    . ((inhibit-same-window . t))))))
+    (with-selected-window window
+      (emacs-todoist--reveal-source-marker marker))
+    (select-window origin-window)))
 
 (defun emacs-todoist-frontend-file-path ()
   "Return the absolute path for the frontend file-backed Org buffer."
@@ -315,11 +389,34 @@ CTX is a plist containing :new-remote-items, :new-sync-token, and :id-map."
 (define-minor-mode emacs-todoist-frontend-mode
   "Minor mode for the file-backed frontend Todoist buffer."
   :lighter " Todoist"
+  :keymap emacs-todoist-frontend-keymap
   (if emacs-todoist-frontend-mode
       (add-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
                 nil t)
     (remove-hook 'after-save-hook #'emacs-todoist--frontend-maybe-sync-after-save
                  t)))
+
+;;;###autoload
+(defun emacs-todoist-view-canonical-heading ()
+  "Open the canonical source heading for the frontend task at point.
+The source heading is displayed in another window while point and selected
+window remain in the frontend buffer."
+  (interactive)
+  (let* ((frontend-marker (emacs-todoist--frontend-heading-marker-at-point))
+         (todoist-id
+          (with-current-buffer (marker-buffer frontend-marker)
+            (save-excursion
+              (goto-char frontend-marker)
+              (org-entry-get (point) "TODOIST_ID"))))
+         (marker (and todoist-id
+                      (emacs-todoist-find-heading
+                       todoist-id (marker-buffer frontend-marker)))))
+    (unless todoist-id
+      (user-error "No TODOIST_ID on this heading"))
+    (unless marker
+      (user-error "No canonical heading found for TODOIST_ID=%s" todoist-id))
+    (save-excursion
+      (emacs-todoist--display-source-marker marker))))
 
 (defun emacs-todoist--frontend-show-buffer (todoist-buf)
   "Display TODOIST-BUF after async frontend work finishes."
@@ -441,6 +538,7 @@ heading visible."
     (org-agenda-list)
     (when-let* ((agenda-buf (get-buffer org-agenda-buffer-name)))
       (with-current-buffer agenda-buf
+        (emacs-todoist-agenda-mode 1)
         (run-hooks 'emacs-todoist-frontend-agenda-hook)))))
 
 ;;;###autoload

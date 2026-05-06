@@ -64,6 +64,9 @@
 ;;;###autoload
 (autoload 'emacs-todoist-frontend-agenda "emacs-todoist-frontend" nil t)
 
+;;;###autoload
+(autoload 'emacs-todoist-view-canonical-heading "emacs-todoist-frontend" nil t)
+
 (autoload 'emacs-todoist-org-capture-install-template
   "emacs-todoist-org-capture" nil t)
 

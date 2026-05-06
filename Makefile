@@ -1,7 +1,8 @@
 EMACS ?= emacs
 
 SRCS := emacs-todoist-org.el emacs-todoist-api.el emacs-todoist.el \
-	emacs-todoist-frontend.el emacs-todoist-org-capture.el
+	emacs-todoist-find-heading.el emacs-todoist-frontend.el \
+	emacs-todoist-org-capture.el
 TEST_SRCS := $(wildcard tests/test-*.el)
 
 .PHONY: test test-org test-api test-integration test-frontend test-live compile clean
