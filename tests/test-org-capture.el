@@ -44,6 +44,21 @@
     (emacs-todoist-org-capture-install-template)
     (should (= 1 (length org-capture-templates)))))
 
+(ert-deftest emacs-todoist-org-capture/command-ensures-frontend-buffer-before-capture ()
+  "Capture command keeps the frontend file buffer alive before Org capture."
+  (let ((org-capture-templates '(("T" "Todoist todo" entry nil "")))
+        (emacs-todoist-org-capture-template-key "T")
+        calls)
+    (cl-letf (((symbol-function 'emacs-todoist-frontend-ensure-buffer)
+               (lambda ()
+                 (push 'ensure-buffer calls)
+                 (current-buffer)))
+              ((symbol-function 'org-capture)
+               (lambda (&rest _args)
+                 (push 'org-capture calls))))
+      (emacs-todoist-org-capture))
+    (should (equal '(ensure-buffer org-capture) (nreverse calls)))))
+
 (ert-deftest emacs-todoist-org-capture/after-finalize-pushes-marker-directly ()
   "Finalize hook pushes the captured heading in place."
   (with-temp-buffer
@@ -56,7 +71,7 @@
           (org-note-abort nil)
           (push-called nil))
       (cl-letf (((symbol-function 'emacs-todoist-push-heading)
-                 (lambda ()
+                 (lambda (&optional _callback)
                    (setq push-called t))))
         (emacs-todoist-org-capture-after-finalize))
       (should push-called)
@@ -98,7 +113,7 @@
           (org-note-abort t)
           (push-called nil))
       (cl-letf (((symbol-function 'emacs-todoist-push-heading)
-                 (lambda ()
+                 (lambda (&optional _callback)
                    (setq push-called t))))
         (emacs-todoist-org-capture-after-finalize))
       (should-not push-called)
@@ -117,6 +132,71 @@
   "Capture module should not globally hook capture finalize behavior."
   (should-not (memq #'emacs-todoist-org-capture-after-finalize
                     org-capture-after-finalize-hook)))
+
+(ert-deftest emacs-todoist-org-capture/after-finalize-notifies-push-success ()
+  "Finalize hook notifies when the asynchronous push succeeds."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* TODO Captured\n")
+    (goto-char (point-min))
+    (let ((emacs-todoist-org-capture--marker (point-marker))
+          (org-note-abort nil)
+          calls)
+      (cl-letf (((symbol-function 'emacs-todoist-push-heading)
+                 (lambda (&optional callback)
+                   (funcall callback 'success "Captured"
+                            "Task pushed to Todoist")))
+                ((symbol-function 'emacs-todoist-org-capture--notify-send)
+                 (lambda (&rest args)
+                   (push args calls))))
+        (emacs-todoist-org-capture-after-finalize))
+      (should (equal '(("normal"
+                        "Todoist capture synced"
+                        "Captured\nTask pushed to Todoist"))
+                     (nreverse calls))))))
+
+(ert-deftest emacs-todoist-org-capture/after-finalize-notifies-push-failure ()
+  "Finalize hook notifies when the asynchronous push fails."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* TODO Captured\n")
+    (goto-char (point-min))
+    (let ((emacs-todoist-org-capture--marker (point-marker))
+          (org-note-abort nil)
+          calls)
+      (cl-letf (((symbol-function 'emacs-todoist-push-heading)
+                 (lambda (&optional callback)
+                   (funcall callback 'failure "Captured"
+                            "Invalid argument value (code 20)")))
+                ((symbol-function 'emacs-todoist-org-capture--notify-send)
+                 (lambda (&rest args)
+                   (push args calls))))
+        (emacs-todoist-org-capture-after-finalize))
+      (should (equal '(("critical"
+                        "Todoist capture failed"
+                        "Captured\nInvalid argument value (code 20)"))
+                     (nreverse calls))))))
+
+(ert-deftest emacs-todoist-org-capture/notify-send-starts-process ()
+  "Notification helper shells out to notify-send when available."
+  (let ((emacs-todoist-org-capture-notify-send t)
+        (emacs-todoist-org-capture-notify-send-command "notify-send")
+        calls)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command)
+                 (and (equal command "notify-send") "/usr/bin/notify-send")))
+              ((symbol-function 'start-process)
+               (lambda (&rest args)
+                 (push args calls)
+                 :process)))
+      (emacs-todoist-org-capture--notify-send
+       "normal" "Todoist capture synced" "Captured"))
+    (should
+     (equal '(("emacs-todoist-notify" nil "notify-send"
+               "-a" "emacs-todoist"
+               "-u" "normal"
+               "Todoist capture synced" "Captured"))
+            (nreverse calls)))))
 
 (ert-deftest emacs-todoist-org-capture/org-last-stored-marker-is-marker ()
   "Org's capture marker variable must stay a marker object."

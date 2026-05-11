@@ -48,6 +48,16 @@ When nil, project resolution uses normal heading/file/default fallback."
   :type '(choice (const nil) string)
   :group 'emacs-todoist-org-capture)
 
+(defcustom emacs-todoist-org-capture-notify-send t
+  "When non-nil, notify Todoist capture push results with notify-send."
+  :type 'boolean
+  :group 'emacs-todoist-org-capture)
+
+(defcustom emacs-todoist-org-capture-notify-send-command "notify-send"
+  "Command used to send desktop notifications for Todoist capture results."
+  :type 'string
+  :group 'emacs-todoist-org-capture)
+
 (defvar emacs-todoist-org-capture--marker nil
   "Marker for the heading currently being finalized by Todoist capture.")
 
@@ -63,6 +73,7 @@ When nil, project resolution uses normal heading/file/default fallback."
 
 (defun emacs-todoist-org-capture--goto-target-headline ()
   "Move point to the frontend capture container, creating it if needed."
+  (emacs-todoist--frontend-setup-buffer t)
   (let ((headline (emacs-todoist-org-capture--target-headline))
         (project (emacs-todoist-org-capture--target-project)))
     (goto-char (point-min))
@@ -136,7 +147,37 @@ child heading."
         (goto-char marker)
         (when (org-get-todo-state)
           (emacs-todoist-org-capture--ensure-heading-project)
-          (emacs-todoist-push-heading))))))
+          (emacs-todoist-push-heading
+           #'emacs-todoist-org-capture--notify-push-result))))))
+
+(defun emacs-todoist-org-capture--notify-send (urgency title body)
+  "Send a notify-send notification with URGENCY, TITLE, and BODY."
+  (when (and emacs-todoist-org-capture-notify-send
+             (executable-find emacs-todoist-org-capture-notify-send-command))
+    (let ((process-connection-type nil))
+      (ignore-errors
+        (start-process
+         "emacs-todoist-notify" nil
+         emacs-todoist-org-capture-notify-send-command
+         "-a" "emacs-todoist"
+         "-u" urgency
+         title body)))))
+
+(defun emacs-todoist-org-capture--notify-push-result (status title detail)
+  "Notify the user about a Todoist capture push result.
+STATUS is `success' or `failure'.  TITLE is the captured task title.
+DETAIL is a short result string."
+  (pcase status
+    ('success
+     (emacs-todoist-org-capture--notify-send
+      "normal"
+      "Todoist capture synced"
+      (format "%s\n%s" title detail)))
+    ('failure
+     (emacs-todoist-org-capture--notify-send
+      "critical"
+      "Todoist capture failed"
+      (format "%s\n%s" title detail)))))
 
 (defun emacs-todoist-org-capture-after-finalize ()
   "Finalize hook for Todoist capture template.
@@ -182,6 +223,7 @@ With APPEND non-nil, append template to the list instead of prepending."
   (interactive)
   (unless (emacs-todoist-org-capture--template-installed-p)
     (emacs-todoist-org-capture-install-template t))
+  (emacs-todoist-frontend-ensure-buffer)
   (org-capture nil emacs-todoist-org-capture-template-key))
 
 (provide 'emacs-todoist-org-capture)

@@ -292,27 +292,29 @@ Uses `url-retrieve' for asynchronous HTTP."
     (url-retrieve
      "https://api.todoist.com/api/v1/sync"
      (lambda (_status)
-       (condition-case err
-           (progn
-             ;; Skip HTTP headers — the body follows the first blank line.
-             (goto-char (point-min))
-             (re-search-forward "\r?\n\r?\n")
-             (let* ((json-object-type 'alist)
-                    (json-array-type  'list)
-                    (json-key-type    'symbol)
-                    (parsed (json-read)))
-               ;; The API returns a top-level `error' key on auth and
-               ;; request-level failures (e.g. invalid token, 403).
-               ;; Pass it through so callers see the error.
-               (if (alist-get 'error parsed)
-                   (funcall callback
-                            `((error . ,(format "%s (code %s)"
-                                                (alist-get 'error parsed)
-                                                (alist-get 'error_code parsed)))))
-                 (funcall callback
-                          (emacs-todoist-api-parse-response parsed)))))
-         (error
-          (funcall callback `((error . ,(error-message-string err))))))))))
+       (let ((response
+              (condition-case err
+                  (progn
+                    ;; Skip HTTP headers — the body follows the first blank line.
+                    (goto-char (point-min))
+                    (re-search-forward "\r?\n\r?\n")
+                    (let* ((json-object-type 'alist)
+                           (json-array-type  'list)
+                           (json-key-type    'symbol)
+                           (parsed (json-read)))
+                      ;; The API returns a top-level `error' key on auth and
+                      ;; request-level failures (e.g. invalid token, 403).
+                      ;; Pass it through so callers see the error.
+                      (if (alist-get 'error parsed)
+                          `((error . ,(format "%s (code %s)"
+                                              (alist-get 'error parsed)
+                                              (alist-get 'error_code parsed))))
+                        (emacs-todoist-api-parse-response parsed))))
+                (error
+                 `((error . ,(error-message-string err)))))))
+         ;; Keep caller/callback errors visible.  Otherwise a bug in sync
+         ;; writeback can be misreported as a Todoist fetch failure.
+         (funcall callback response))))))
 
 ;; ==============================================================================
 ;; Convenience wrappers

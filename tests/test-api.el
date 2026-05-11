@@ -413,6 +413,23 @@ instead of crashing."
     ;; The callback should have received an error alist, not a crash.
     (should (alist-get 'error callback-result))))
 
+(ert-deftest emacs-todoist-api-sync/does-not-mask-callback-errors ()
+  "Callback errors should not be reclassified as API errors."
+  (let ((emacs-todoist-api-token "test-token"))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (with-temp-buffer
+                   (insert "HTTP/1.1 200 OK\r\n")
+                   (insert "Content-Type: application/json\r\n")
+                   (insert "\r\n")
+                   (insert "{\"sync_token\":\"tok\",\"items\":[]}")
+                   (funcall callback nil)))))
+      (should-error
+       (emacs-todoist-api-sync
+        "*" '("items") nil
+        (lambda (_resp)
+          (error "callback failed")))))))
+
 (ert-deftest emacs-todoist-api-sync/escapes-non-ascii-request-body ()
   "Sync request body is ASCII-only and escapes Unicode payload text."
   (let* ((emacs-todoist-api-token "test-token")

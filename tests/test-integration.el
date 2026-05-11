@@ -2000,7 +2000,7 @@ Reproduces a bug where `emacs-todoist-org-apply-remote' (via
     (let ((emacs-todoist-org-capture--marker (point-marker))
           (push-called nil))
       (cl-letf (((symbol-function 'emacs-todoist-push-heading)
-                 (lambda ()
+                 (lambda (&optional _callback)
                    (setq push-called t))))
         (emacs-todoist-org-capture-after-finalize))
       (should push-called)

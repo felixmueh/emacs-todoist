@@ -261,10 +261,12 @@ Each entry has at least `name' and `id' keys."
   (emacs-todoist-log 'debug "Project cache populated with %d entries"
                      (length emacs-todoist--project-cache)))
 
-(defun emacs-todoist--ensure-projects (callback)
+(defun emacs-todoist--ensure-projects (callback &optional error-callback)
   "Ensure the project cache is populated, then call CALLBACK.
 If the cache is already populated, calls CALLBACK immediately.
-Otherwise fetches projects from the API first."
+Otherwise fetches projects from the API first.
+When ERROR-CALLBACK is non-nil, call it with the failed response
+instead of only logging the project fetch failure."
   (if (not (eq emacs-todoist--project-cache :not-fetched))
       (funcall callback)
     (emacs-todoist-log 'debug "Fetching project list for cache")
@@ -274,10 +276,23 @@ Otherwise fetches projects from the API first."
            (progn
              (emacs-todoist-log 'error "Failed to fetch projects: %s"
                                 (alist-get 'error response))
-             (message "emacs-todoist: failed to fetch projects"))
+             (message "emacs-todoist: failed to fetch projects")
+             (when error-callback
+               (funcall error-callback response)))
          (emacs-todoist--project-cache-populate
           (alist-get 'projects response))
          (funcall callback))))))
+
+(defun emacs-todoist--run-push-callback (callback status title detail)
+  "Call optional push CALLBACK with STATUS, TITLE, and DETAIL.
+Callback failures are logged and do not affect the completed sync."
+  (when callback
+    (condition-case err
+        (funcall callback status title detail)
+      (error
+       (emacs-todoist-log
+        'error "Push callback failed for %s: %s"
+        title (error-message-string err))))))
 
 (defun emacs-todoist--resolve-project-id (project-string)
   "Resolve PROJECT-STRING to a numeric Todoist project ID.
@@ -732,13 +747,15 @@ resolved via the nearest TODO ancestor, skipping non-TODO headings."
 ;; Push new heading (no TODOIST_ID yet)
 ;; ==============================================================================
 
-(defun emacs-todoist--push-new-heading ()
+(defun emacs-todoist--push-new-heading (&optional callback)
   "Push the heading at point as a new Todoist task.
 Builds item_add commands for unsynced TODO headings in its subtree,
 sends them via the Sync API, and writes back the resulting IDs and
 hashes as org properties.
 
-Fetches the project list on first use to resolve project names to IDs."
+Fetches the project list on first use to resolve project names to IDs.
+When CALLBACK is non-nil, call it after success or failure with
+\(STATUS TITLE DETAIL), where STATUS is either `success' or `failure'."
   (let ((marker (point-marker)))
     ;; Ensure the project cache is populated before we resolve names.
     (emacs-todoist--ensure-projects
@@ -746,12 +763,22 @@ Fetches the project list on first use to resolve project names to IDs."
        (with-current-buffer (marker-buffer marker)
          (save-excursion
            (goto-char marker)
-           (emacs-todoist--push-new-heading-1)))))))
+           (emacs-todoist--push-new-heading-1 callback))))
+     (lambda (response)
+       (with-current-buffer (marker-buffer marker)
+         (save-excursion
+           (goto-char marker)
+           (emacs-todoist--run-push-callback
+            callback 'failure
+            (emacs-todoist-org-heading-title)
+            (format "Failed to fetch projects: %s"
+                    (alist-get 'error response)))))))))
 
-(defun emacs-todoist--push-new-heading-1 ()
+(defun emacs-todoist--push-new-heading-1 (&optional callback)
   "Internal: build and send item_add commands for the heading at point.
 Assumes the project cache is already populated.  Called by
-`emacs-todoist--push-new-heading' after `emacs-todoist--ensure-projects'."
+`emacs-todoist--push-new-heading' after `emacs-todoist--ensure-projects'.
+When CALLBACK is non-nil, call it after success or failure."
   (let* ((result  (emacs-todoist--build-new-heading-commands))
          (commands (car result))
          (entries  (cdr result))
@@ -762,7 +789,9 @@ Assumes the project cache is already populated.  Called by
           (emacs-todoist-log
            'info "Skipping push: heading has no unsynced TODO tasks in subtree: %s"
            title)
-          (message "emacs-todoist: no TODO tasks to push in this subtree"))
+          (message "emacs-todoist: no TODO tasks to push in this subtree")
+          (emacs-todoist--run-push-callback
+           callback 'failure title "No TODO tasks to push in this subtree"))
       (emacs-todoist-log 'info "Pushing new heading: %s" title)
 
       ;; Send the batch to Todoist.  The callback writes properties back
@@ -773,17 +802,24 @@ Assumes the project cache is already populated.  Called by
          (cond
           ((alist-get 'error response)
            (emacs-todoist-log 'error "Sync error: %s" (alist-get 'error response))
-           (message "emacs-todoist: sync error for \"%s\"" title))
+           (message "emacs-todoist: sync error for \"%s\"" title)
+           (emacs-todoist--run-push-callback
+            callback 'failure title (format "%s" (alist-get 'error response))))
 
           ((emacs-todoist--check-sync-status response)
            (emacs-todoist-log 'error "Push failed for %s: %s"
                               title (emacs-todoist--check-sync-status response))
-           (message "emacs-todoist: push failed for \"%s\" (see log)" title))
+           (message "emacs-todoist: push failed for \"%s\" (see log)" title)
+           (emacs-todoist--run-push-callback
+            callback 'failure title
+            (format "%s" (emacs-todoist--check-sync-status response))))
 
           (t
            (emacs-todoist--write-new-heading-props entries response)
            (emacs-todoist-log 'info "Pushed new heading successfully: %s" title)
-           (message "emacs-todoist: pushed new task \"%s\"" title))))))))
+           (message "emacs-todoist: pushed new task \"%s\"" title)
+           (emacs-todoist--run-push-callback
+            callback 'success title "Task pushed to Todoist"))))))))
 
 (defun emacs-todoist--write-new-heading-props (entries response)
   "Write IDs, hashes, and sync token to headings from a push response.
@@ -886,11 +922,13 @@ full fetch.  CALLBACK is invoked after reconcile/writeback."
 ;; Push update (existing task, local changes)
 ;; ==============================================================================
 
-(defun emacs-todoist--push-update (todoist-id sync-token &optional new-sync-token)
+(defun emacs-todoist--push-update (todoist-id sync-token &optional new-sync-token callback)
   "Push local changes for heading at point to Todoist.
 TODOIST-ID is the existing task's ID.  SYNC-TOKEN is the current token.
 NEW-SYNC-TOKEN, when non-nil, is a fresh token from a recent fetch
-that should be stored after the push."
+that should be stored after the push.
+When CALLBACK is non-nil, call it after success or failure with
+\(STATUS TITLE DETAIL), where STATUS is either `success' or `failure'."
   (let* ((marker   (point-marker))
          (title    (emacs-todoist-org-heading-title))
          (state-at-push (emacs-todoist-org-heading-todo-state))
@@ -905,12 +943,17 @@ that should be stored after the push."
         ((alist-get 'error response)
          (emacs-todoist-log 'error "Push update error: %s"
                             (alist-get 'error response))
-         (message "emacs-todoist: push update error for \"%s\"" title))
+         (message "emacs-todoist: push update error for \"%s\"" title)
+         (emacs-todoist--run-push-callback
+          callback 'failure title (format "%s" (alist-get 'error response))))
 
         ((emacs-todoist--check-sync-status response)
          (emacs-todoist-log 'error "Push update failed for %s: %s"
                             title (emacs-todoist--check-sync-status response))
-         (message "emacs-todoist: push update failed for \"%s\" (see log)" title))
+         (message "emacs-todoist: push update failed for \"%s\" (see log)" title)
+         (emacs-todoist--run-push-callback
+          callback 'failure title
+          (format "%s" (emacs-todoist--check-sync-status response))))
 
         (t
          (let ((resp-token (alist-get 'sync_token response)))
@@ -919,11 +962,15 @@ that should be stored after the push."
                 marker todoist-id response
                 (lambda ()
                   (emacs-todoist-log 'info "Pushed update successfully: %s" title)
-                  (message "emacs-todoist: pushed update for \"%s\"" title)))
+                  (message "emacs-todoist: pushed update for \"%s\"" title)
+                  (emacs-todoist--run-push-callback
+                   callback 'success title "Task pushed to Todoist")))
              (progn
                (emacs-todoist--write-local-push-writeback marker resp-token)
                (emacs-todoist-log 'info "Pushed update successfully: %s" title)
-               (message "emacs-todoist: pushed update for \"%s\"" title))))))))))
+               (message "emacs-todoist: pushed update for \"%s\"" title)
+               (emacs-todoist--run-push-callback
+                callback 'success title "Task pushed to Todoist"))))))))))
 
 ;; ==============================================================================
 ;; Pull remote changes into local heading
@@ -1057,18 +1104,20 @@ push/pull/conflict handler."
 ;; Force push / force pull commands
 ;; ==============================================================================
 
-(defun emacs-todoist-push-heading ()
+(defun emacs-todoist-push-heading (&optional callback)
   "Force push the heading at point to Todoist, ignoring remote state.
 If the heading has no TODOIST_ID, pushes as a new task.  Otherwise,
-sends an update with all current local field values."
+sends an update with all current local field values.
+When CALLBACK is non-nil, call it after success or failure with
+\(STATUS TITLE DETAIL), where STATUS is either `success' or `failure'."
   (interactive)
   (org-back-to-heading t)
   (let* ((props      (emacs-todoist-org-heading-props))
          (todoist-id (alist-get "TODOIST_ID" props nil nil #'equal))
          (sync-token (alist-get "TODOIST_SYNC_TOKEN" props nil nil #'equal)))
     (if (null todoist-id)
-        (emacs-todoist--push-new-heading)
-      (emacs-todoist--push-update todoist-id (or sync-token "*")))))
+        (emacs-todoist--push-new-heading callback)
+      (emacs-todoist--push-update todoist-id (or sync-token "*") nil callback))))
 
 (defun emacs-todoist-pull-heading ()
   "Force pull remote data for the heading at point, ignoring local changes.
