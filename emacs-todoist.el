@@ -156,7 +156,7 @@ When this variable is buffer-local, it overrides
   :group 'emacs-todoist)
 
 (defcustom emacs-todoist-auto-sync-on-todo-change t
-  "When non-nil, `emacs-todoist-mode' auto-syncs the current subtree on TODO changes."
+  "When non-nil, `emacs-todoist-mode' auto-syncs the subtree on TODO changes."
   :type 'boolean
   :group 'emacs-todoist)
 

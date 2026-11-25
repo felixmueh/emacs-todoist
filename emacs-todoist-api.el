@@ -263,7 +263,7 @@ TODOIST_REMOTE_HASH stored alongside org headings."
   (if (<= char #xFFFF)
       (format "\\u%04x" char)
     (let* ((u (- char #x10000))
-           (hi (+ #xD800 (lsh u -10)))
+           (hi (+ #xD800 (ash u -10)))
            (lo (+ #xDC00 (logand u #x3FF))))
       (format "\\u%04x\\u%04x" hi lo))))
 
@@ -302,9 +302,10 @@ Uses `url-retrieve' for asynchronous HTTP."
          ;; `url-retrieve' can signal "Multibyte text in HTTP request" when
          ;; payload text contains raw non-ASCII chars.  Keep the JSON
          ;; payload ASCII-only (\uXXXX escapes), then pass unibyte bytes.
+         ;; For ASCII text UTF-8 encoding is the identity on bytes.
          (url-request-data
-          (string-as-unibyte
-           (emacs-todoist-api--json-encode-ascii body))))
+          (encode-coding-string
+           (emacs-todoist-api--json-encode-ascii body) 'utf-8)))
     (url-retrieve
      "https://api.todoist.com/api/v1/sync"
      (lambda (_status)

@@ -36,8 +36,8 @@
 (require 'emacs-todoist)
 (require 'emacs-todoist-frontend)
 
-(defvar org-note-abort nil
-  "Non-nil when the current Org capture session is aborted.")
+;; Defined in org.el; declared here so it is bound dynamically.
+(defvar org-note-abort)
 
 (defgroup emacs-todoist-org-capture nil
   "Org capture integration for emacs-todoist." 
