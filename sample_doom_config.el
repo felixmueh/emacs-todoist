@@ -1,11 +1,15 @@
 ;;; sample_doom_config.el --- Example Doom Emacs config for emacs-todoist -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 ;;
 ;; Drop this into ~/.doom.d/config.el (or load it from there) and adapt paths.
 ;;
 ;; Add package declaration in ~/.doom.d/packages.el:
 ;;   (package! emacs-todoist
-;;     :recipe (:host github :repo "felix/emacs-todoist"))
+;;     :recipe (:host github :repo "felixmueh/emacs-todoist"))
 ;;
 ;; For local development instead:
 ;;   (package! emacs-todoist

@@ -1,5 +1,8 @@
 ;;; test-find-heading.el --- Canonical heading lookup tests -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 (require 'ert)
 (require 'cl-lib)
 (require 'org)

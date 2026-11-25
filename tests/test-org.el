@@ -1,5 +1,8 @@
 ;;; test-org.el --- Tests for emacs-todoist-org  -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 (require 'ert)
 (require 'emacs-todoist-org)
 

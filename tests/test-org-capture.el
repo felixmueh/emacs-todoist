@@ -1,5 +1,8 @@
 ;;; test-org-capture.el --- Org capture tests for emacs-todoist -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 (require 'ert)
 (require 'cl-lib)
 (require 'org)

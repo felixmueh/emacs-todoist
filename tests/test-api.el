@@ -1,5 +1,8 @@
 ;;; test-api.el --- Tests for emacs-todoist-api  -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-todoist-api)

@@ -1,5 +1,8 @@
 ;;; run-tests.el --- Test runner for emacs-todoist  -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;; Load all test files.
 (require 'ert)
 

@@ -1,5 +1,8 @@
 ;;; test-live.el --- Live API tests for emacs-todoist  -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026  Felix Mühlenberend
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;; These tests make real HTTP calls to the Todoist Sync API v1.
 ;; They require a valid API token in .todoist_api_token at the project root.
 ;;
