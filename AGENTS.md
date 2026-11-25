@@ -11,15 +11,20 @@ preserve backward compatibility unless explicitly requested.
 
 ## Architecture
 
-Five modules with strict dependency direction:
+Six modules with strict dependency direction (arrows point to what a
+module requires):
 
 ```
-emacs-todoist.el           (integration: config, core sync logic, interactive commands)
-  ├── emacs-todoist-org.el      (pure org-mode parsing/manipulation, no API)
-  ├── emacs-todoist-api.el      (Todoist Sync API wrapper, no org dependency)
-  ├── emacs-todoist-frontend.el (file-backed Todoist org buffer + incremental refresh)
-  └── emacs-todoist-org-capture.el (Todoist-specific capture template + finalize hooks)
+emacs-todoist-org-capture.el    (Todoist-specific capture template + finalize hooks)
+  └── emacs-todoist-frontend.el (file-backed Todoist org buffer + incremental refresh)
+        ├── emacs-todoist-find-heading.el (canonical heading lookup, no sync logic)
+        └── emacs-todoist.el    (integration: config, core sync logic, interactive commands)
+              ├── emacs-todoist-org.el (pure org-mode parsing/manipulation, no API)
+              └── emacs-todoist-api.el (Todoist Sync API wrapper, no org dependency)
 ```
+
+`emacs-todoist.el` autoloads the frontend and capture commands, so users
+only `(require 'emacs-todoist)`.
 
 - **`emacs-todoist-org.el`** — Pure org-mode operations. All functions
   assume point is on an org heading. No network calls. Testable in isolation.
@@ -34,6 +39,11 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
   `emacs-todoist-open` and `emacs-todoist-frontend-sync`. Renders all
   tasks into a file-backed org buffer grouped by project and applies
   incremental remote inserts/updates in-place.
+- **`emacs-todoist-find-heading.el`** — Finds the canonical
+  (non-frontend) Org heading for a `TODOIST_ID`. `TODOIST_ID` is the
+  identity; the file cache (`emacs-todoist-find-heading-cache-file`)
+  and org-id are hints that are verified before use. Used by
+  `emacs-todoist-view-canonical-heading`.
 - **`emacs-todoist-org-capture.el`** — Dedicated Todoist capture
   template module. Owns capture-template installation and finalize hooks.
 
@@ -45,6 +55,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 |----------|---------|
 | `emacs-todoist-org-heading-title` | Heading text without TODO/priority/tags |
 | `emacs-todoist-org-heading-deadline` | DEADLINE as "YYYY-MM-DD" or nil |
+| `emacs-todoist-org-heading-due-string` | TODOIST_DUE_STRING (recurrence) or nil |
 | `emacs-todoist-org-heading-description` | Body text (excludes drawers, planning, children) |
 | `emacs-todoist-org-heading-todo-state` | TODO state string or nil |
 | `emacs-todoist-set-todo-state` | Set heading TODO state textually without calling `org-todo` |
@@ -61,7 +72,7 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-org-todo-entries-in-subtree` | TODO headings in subtree |
 | `emacs-todoist-org-apply-remote` | Update heading from Todoist task alist |
 | `emacs-todoist-org--replace-body` | Replace body text (preserves drawers/children) |
-| `emacs-todoist-org-resolve-project` | Heading prop → file keyword → global default |
+| `emacs-todoist-org-resolve-project` | Heading prop → ancestor prop → file keyword → global default |
 | `emacs-todoist-org-heading-to-alist` | Bundle heading into alist for sync |
 
 **`emacs-todoist-api.el`** — Sync API v1 commands and HTTP:
@@ -93,13 +104,25 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-sync-buffer` | Sync all linked headings in buffer; with `C-u` also push new TODOs |
 | `emacs-todoist-sync-subtree` | Sync all linked headings in subtree; with `C-u` also push new TODOs |
 | `emacs-todoist-sync-region` | Sync all linked headings in region; with `C-u` also push new TODOs |
+| `emacs-todoist-set-project` | Set or clear `TODOIST_PROJECT` on the heading |
+| `emacs-todoist-set-recurrence` | Set or clear `TODOIST_DUE_STRING` (e.g. `every monday`) |
+| `emacs-todoist-mode` | Minor mode: sync the subtree after a TODO keyword change |
 
 **`emacs-todoist-frontend.el`** — frontend commands:
 
 | Command | Purpose |
 |---------|---------|
-| `emacs-todoist-open` | Create/recreate the file-backed Todoist org buffer from remote items |
+| `emacs-todoist-open` | Open the file-backed Todoist org buffer and sync it |
+| `emacs-todoist-open-recreate` | Render the frontend buffer again from remote items |
 | `emacs-todoist-frontend-sync` | Incremental refresh for the frontend buffer using stored sync token |
+| `emacs-todoist-frontend-agenda` | Refresh the frontend, then open an agenda for its tasks |
+| `emacs-todoist-view-canonical-heading` | Show the original heading of the frontend task at point |
+
+**`emacs-todoist-find-heading.el`** — lookup:
+
+| Function | Purpose |
+|----------|---------|
+| `emacs-todoist-find-heading` | Marker for the canonical heading with a `TODOIST_ID`, or nil |
 
 **`emacs-todoist-org-capture.el`** — capture commands/hooks:
 
@@ -125,7 +148,8 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist--push-new-heading` | Push new heading (ensures projects, async) |
 | `emacs-todoist--push-update` | Push update for existing task |
 | `emacs-todoist--apply-pull` | Apply remote item to heading + update hashes |
-| `emacs-todoist--handle-deletion` | Prompt: delete local / re-push / unlink |
+| `emacs-todoist--handle-deletion` | Task missing from a full fetch: mark DONE, run the done action (no prompt) |
+| `emacs-todoist--run-on-done-action` | Apply `emacs-todoist-on-done-action` (or the frontend's) to a DONE heading |
 | `emacs-todoist--sync-entries` | Bulk sync entry point (linked + new markers) |
 | `emacs-todoist--sync-entries-1` | Continuation after project cache |
 | `emacs-todoist--sync-entries-classify` | Classify linked headings: pull/push/skip/conflict/deleted |
@@ -141,15 +165,26 @@ emacs-todoist.el           (integration: config, core sync logic, interactive co
 | `emacs-todoist-todo-state-mapping` | alist | TODO states → checked values (default: TODO=nil, DONE=1) |
 | `emacs-todoist-log-level` | symbol | Minimum log level: `debug`, `info`, `warn`, `error` |
 | `emacs-todoist-log-buffer-name` | string | Log buffer name (default: `"*emacs-todoist-log*"`) |
+| `emacs-todoist-on-done-action` | symbol or function | After syncing a DONE heading: `nil`, `delete-properties`, `delete-heading` or a function |
+| `emacs-todoist-frontend-on-done-action` | symbol or function | The same for the frontend buffer (default `delete-heading`) |
+| `emacs-todoist-auto-sync-on-todo-change` | boolean | `emacs-todoist-mode` syncs the subtree on TODO changes |
+| `emacs-todoist-frontend-sync-on-save` | boolean | Saving the frontend buffer triggers a sync |
+
+The frontend (`emacs-todoist-frontend-*`), capture
+(`emacs-todoist-org-capture-*`) and find-heading modules define their
+own `defcustom`s in their files.
 
 ## Sync state model
 
-All state lives in org heading properties — no external caches:
+Sync state lives in org heading properties. The only file outside
+the Org files is the find-heading location cache, which holds hints,
+not sync state:
 
 | Property | Purpose |
 |----------|---------|
 | `TODOIST_ID` | Real Todoist task ID |
-| `TODOIST_PROJECT` | Project ID override |
+| `TODOIST_PROJECT` | Project name or ID override |
+| `TODOIST_DUE_STRING` | Todoist due string, e.g. a recurrence (`every monday`) |
 | `TODOIST_LOCAL_HASH` | SHA-1 of (title, deadline, due string, desc, state) |
 | `TODOIST_REMOTE_HASH` | SHA-1 of Todoist item's sync-relevant fields |
 | `TODOIST_SYNC_TOKEN` | Sync token from last successful sync |
@@ -169,8 +204,9 @@ Both hashes update together after each successful sync.
 
 **Deletion detection**:
 - Incremental sync: missing item = unchanged (no action)
-- Full sync (`"*"`): missing item = deleted remotely → prompt user:
-  delete local, re-push, or unlink
+- Full sync (`"*"`): missing item = completed or deleted remotely →
+  the heading is marked DONE and the configured done action runs,
+  without a prompt (`emacs-todoist--handle-deletion`)
 
 ### Bulk sync flow (internal)
 
@@ -206,34 +242,38 @@ emacs-todoist--sync-entries(linked-markers, new-markers)
 ## Testing
 
 ```sh
-make test              # All non-live tests (199 tests)
-make test-org          # Only org module tests (55 tests)
-make test-api          # Only API tests (46 tests, mocked HTTP)
-make test-integration  # Only integration tests (61 tests)
-make test-frontend     # Only frontend tests (30 tests)
+make test              # All non-live tests (249 tests)
+make test-org          # Only org module tests (56 tests)
+make test-api          # Only API tests (47 tests, mocked HTTP)
+make test-integration  # Only integration tests (73 tests)
+make test-frontend     # Only frontend tests (51 tests)
 make test-live         # Live API tests (10 tests, requires token)
 
 # Filter by file and pattern:
 make test FILE=test-org MATCH=description
 make test FILE=test-org-capture
+make test FILE=test-find-heading
+make compile           # Byte-compile; must stay free of warnings
 ```
 
 ### Test architecture
 
-- **`tests/test-org.el`** (55 tests) — Unit tests for all
+- **`tests/test-org.el`** (56 tests) — Unit tests for all
   `emacs-todoist-org-*` functions. Uses `with-org-buffer` helper.
-- **`tests/test-api.el`** (46 tests) — Unit tests for API command
+- **`tests/test-api.el`** (47 tests) — Unit tests for API command
   builders, parsing, and hashing. Mocks `url-retrieve` via `cl-letf`.
-- **`tests/test-integration.el`** (61 tests) — End-to-end sync
+- **`tests/test-integration.el`** (73 tests) — End-to-end sync
   logic. Mocks `emacs-todoist-api-sync` via `with-mock-sync`. Tests
   cover single-heading sync, force push/pull, bulk sync, project
   resolution, deletion handling, parent/child cascading, logging.
-- **`tests/test-frontend.el`** (30 tests) — Frontend rendering and
+- **`tests/test-frontend.el`** (51 tests) — Frontend rendering and
   incremental sync tests for `emacs-todoist-open` and
   `emacs-todoist-frontend-sync`, including project grouping and
   top-level insertion behavior.
-- **`tests/test-org-capture.el`** (7 tests) — Capture-template and
+- **`tests/test-org-capture.el`** (13 tests) — Capture-template and
   finalize-hook tests for `emacs-todoist-org-capture.el`.
+- **`tests/test-find-heading.el`** (9 tests) — Canonical heading
+  lookup, cache validation and frontend-file exclusion.
 - **`tests/test-live.el`** (10 tests) — Real API calls, excluded
   from `make test`. See below.
 
@@ -303,8 +343,9 @@ permissions.
   inspects `checked` must handle all forms — see
   `emacs-todoist-api-hash-item` and `emacs-todoist-org-apply-remote`
   for the canonical pattern.
-- **Project resolution**: Three-level cascade: heading property
-  `TODOIST_PROJECT` → file keyword `#+TODOIST_PROJECT:` → global
+- **Project resolution**: Four-level cascade: heading property
+  `TODOIST_PROJECT` → nearest ancestor's `TODOIST_PROJECT` → file
+  keyword `#+TODOIST_PROJECT:` → global
   `emacs-todoist-default-project`. Names are resolved to numeric IDs
   via a session-level cache populated lazily from the API.
 - **Child deduplication in bulk sync**: When pushing new headings in
@@ -319,8 +360,11 @@ permissions.
 - **HTTP body encoding (critical)**: `url-retrieve` request payloads
   must be unibyte. JSON containing multibyte characters can trigger
   `Multibyte text in HTTP request`. Encode sync payloads as ASCII-safe
-  JSON (`\uXXXX` escapes) and convert with `string-as-unibyte` before
-  calling `url-retrieve`.
+  JSON (`\uXXXX` escapes) and convert with
+  `(encode-coding-string ... 'utf-8)` before calling `url-retrieve`.
+- **Licence headers**: every `.el` file carries the copyright line and
+  `SPDX-License-Identifier: GPL-3.0-or-later`; package files also carry
+  the GPL notice. Keep them when adding files.
 
 ## Implementation phases
 
@@ -332,32 +376,24 @@ permissions.
   `sync-region`) — done, 14 bulk-specific integration tests
 - [x] Phase 4b: `emacs-todoist-open` frontend buffer + incremental
   `emacs-todoist-frontend-sync` (covered by `tests/test-frontend.el`)
-- [ ] Phase 5: Polish (README.org, package metadata cleanup)
+- [x] Phase 5: Polish (README.md, LICENSE, package headers)
 
-## Current project snapshot (2026-03-09)
+## Current project snapshot (2026-11-25)
 
-- Core non-live test suite: `199/199` passing.
-- Live API suite: `10/10` passing.
-- Frontend buffer is implemented and autoloaded from
-  `emacs-todoist.el`.
-- Recent regression classes now covered by tests:
+- Core non-live test suite: `249/249` passing on Emacs 30.2.
+- Byte-compilation is free of warnings.
+- Open design problems are tracked in `SESSION.md`.
+- Regression classes covered by tests include:
   - async callback buffer context for frontend post-classify hooks
   - marker-anchor drift during top-level insertions
   - non-ASCII payload encoding in Sync API requests
-
-## Phase 5: Polish
-
-- Package headers cleanup in sub-modules
-- `README.org` with usage/configuration and frontend workflow
-- Address items in `SESSION.md`
 
 ## Known future work (not MVP)
 
 - Parent/child structure change conflict resolution
 - ediff for conflict resolution (currently prompts local vs remote)
 - Todoist labels/priorities mapping
-- Recurring task support
 - `sync-dwim` command: region if active → subtree → buffer
-- Non-interactive mode for `--handle-deletion` (currently uses
-  `read-char-choice` which blocks in batch mode)
+- Non-interactive conflict resolution (the local/remote choice uses
+  `read-char-choice`, which blocks in batch mode)
 - Error messages surfaced to user via `message` (not just logged)
